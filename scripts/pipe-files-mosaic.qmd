@@ -1,0 +1,69 @@
+---
+title: Mosaic GEE Output
+author: 'Wesley Rancher'
+date: 2024-12-27
+date-modified: last-modified
+categories: [R, GEE, s3]
+title-block-banner: false
+title-block-banner-color: white
+---
+
+Transfer images from google drive to s3
+
+```{bash, eval = FALSE}
+install brew
+#sudo install brew
+brew install gdrive
+
+#you need to be registered for google cloud and point to the project where you have your files and folders. Enable gdrive API here:
+https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=91883519541
+
+gdrive account add #client id on google cloud profile
+
+#get the numbers from the share url
+gdrive files list --query "'1TUtmF2tGdFFjvt2xMB2j-gfhHnTTRvVW' in parents"
+
+#we just need the id
+
+#pipe gdrive file to s3 bucket using wget
+for FILE_ID in $(gdrive files list --query "'1TUtmF2tGdFFjvt2xMB2j-gfhHnTTRvVW' in parents" --skip-header | awk '{print $1}'); do
+    FILE_NAME=$(gdrive files info $FILE_ID | grep "Name" | awk -F': ' '{print $2}')
+    wget --no-check-certificate "https://drive.google.com/uc?export=download&id=$FILE_ID" -O - | \
+    aws s3 cp - s3://landis-ii-input/rs-data/$FILE_NAME --endpoint-url https://usgs2.osn.mghpcc.org
+done
+
+#see if it worked
+aws s3 ls s3://landis-ii-input/rs-data/ --endpoint-url https://usgs2.osn.mghpcc.org
+```
+
+We have now uploaded the tiled images to our s3 bucket. We can start a jetstream instance and copy files to our working directory and then run our R script to mosaic the tiles.
+
+```{bash, eval = FALSE}
+#push mosaic script to s3
+aws s3 cp scripts/mosaic_rasters.R s3://landis-ii-input/scripts/ --endpoint-url https://usgs2.osn.mghpcc.org
+
+#ssh into jetstream
+cd ../jetstream/
+ssh -i sshkeys wrancher@149.165.170.37
+yes
+
+#install aws cp s3 files onto jetstream directory
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+aws --version
+aws configure
+
+#rasters
+aws s3 cp s3://landis-ii-input/rs-data/ /home/wrancher/rs-data/tiles/ --endpoint-url https://usgs2.osn.mghpcc.org --recursive
+
+#download r
+module avail R
+module load R/4.2.1
+
+#copy r script
+aws s3 cp s3://landis-ii-input/scripts/ /home/wrancher/scripts/ --endpoint-url https://usgs2.osn.mghpcc.org --recursive
+mkdir rs-data/mosaics/
+
+Rscript scripts/mosaic_rasters.R
+```

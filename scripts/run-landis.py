@@ -3,6 +3,7 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import argparse
+batch_file = "historic-ncar.bat"
 
 # function to run landis batch files in the docker container
 def run_batch_file_in_container(batch_file, mount_path, container_name):
@@ -42,9 +43,9 @@ if __name__ == '__main__':
     # command line arg parsing
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--num_replicates", type=int, required=True, help="Number of replicates to process")
-    arg_parser.add_argument("--batch_files", nargs='+', type=str, 
-                            default=['historic-ncar.bat', 'future-ncar.bat', 'future-gfdl.bat'], 
-                            help="Batch files to run (comma-separated)")
+    #arg_parser.add_argument("--batch_files", nargs='+', type=str, 
+    #                        default=['historic-ncar.bat', 'future-ncar.bat', 'future-gfdl.bat'], 
+    #                        help="Batch files to run (comma-separated)")
     arg_parser.add_argument("--container_name", type=str, required=True, help="Docker container name")
     arg_parser.add_argument("--access_id", type=str, required=True, help="User access ID")
 
@@ -56,9 +57,9 @@ if __name__ == '__main__':
 
     # get environment vars
     num_replicates = args.num_replicates
-    batch_files = args.batch_files
+    #batch_files = args.batch_files
     print(f"Number of reps: {num_replicates}")
-    print(f"Scenarios: {batch_files}")
+    #print(f"Scenarios: {batch_files}")
 
     access_id = args.access_id
     container_name = args.container_name
@@ -71,4 +72,4 @@ if __name__ == '__main__':
     print(f"Output folder: {output_folder}")
 
     # run the main function
-    main(num_replicates, batch_files, mount_path, output_folder, container_name)
+    main(num_replicates, mount_path, output_folder, container_name)

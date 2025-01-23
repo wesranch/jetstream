@@ -16,10 +16,8 @@ aws configure
 # download input data from S3
 mkdir -p ~/landis/input ~/landis/scripts ~/landis/output
 
-#input files
+#landis input files
 aws s3 sync s3://landis-ii-input/interior-AK-input ~/landis/input --endpoint-url "$S3_ENDPOINT_URL"
-#python execute file
-aws s3 cp s3://landis-ii-input/scripts/run-landis.py ~/landis/scripts/run-landis.py --endpoint-url "$S3_ENDPOINT_URL"
 
 #make scripts executable 
 chmod +x ~/landis/input/historic-ncar.sh

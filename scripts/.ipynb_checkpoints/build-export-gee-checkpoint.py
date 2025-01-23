@@ -1,5 +1,12 @@
-#Landsat image processing and predictor variable dataset creation
-# Wesley Rancher, Hana Matsumoto
+## This code blends two workflows to generate a multiband raster of landsat-derived 
+## predictor variables for spring, summer, and fall. User can define year or years of interest.
+
+### Wesley Rancher, Hana Matsumoto
+### 10 July 2024 // cleaned:15 August 2024
+
+### Hurni, K., Würsch, L. & Heinimann, A. (2017): Google Earth Engine Image Pre-processing Tool.
+### https://doi.org/10.1016/j.rse.2019.111225
+### Massey et al., 2023 //  follow their code instructions for proper citation
 
 # %% start GEE session
 import ee
@@ -11,31 +18,35 @@ ee.Authenticate()
 ee.Initialize()
 
 # %% Read in some ROI files and sampling data
+#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
+AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
 
-#AK_landscape_model_region = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
-#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
-#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/boreal_AK')
-states = ee.FeatureCollection('TIGER/2016/States') 
-AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
+Map = geemap.Map(center=[64, -152], zoom=5, basemap='Esri.WorldGrayCanvas')
 
-#Map = geemap.Map(center=[64, -152], zoom=5, basemap='Esri.WorldGrayCanvas')
+# read in external predictors
+soil = ee.Image('projects/ee-vegshiftsalaska/assets/soil_classes_clipped_250m')
+topo = ee.Image('projects/ee-vegshiftsalaska/assets/dem_clipped_30m')
 
-# topographic data
-topo_data = ee.ImageCollection('JAXA/ALOS/AW3D30/V3_2').filterBounds(AK_landscape).select('DSM')
+# rename the bands
+soil_renamed = soil.rename(["soil_classes"])
+topo_renamed = topo.rename(['elev', 'slope', 'aspect'])
 
-elevation = topo_data.mosaic().reproject(crs='EPSG:4326', scale=30)
-slope = ee.Terrain.slope(topo_data.mosaic().reproject(crs='EPSG:4326', scale=30))
-aspect = ee.Terrain.aspect(topo_data.mosaic().reproject(crs='EPSG:4326', scale=30))
+# read in CAFI data
+cafiPlots = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/CAFI_SITE_INTERIOR')
 
-topo_layers = elevation.addBands(slope).addBands(aspect)
+# read in climate and disturbance vars
+Clim_vars = ee.Image("WORLDCLIM/V1/BIO").select('bio01', 'bio04', 'bio05', 'bio06', 'bio12', 
+                                                'bio13', 'bio14', 'bio15')
+Clim_vars_renamed = Clim_vars.rename('annual_mean_temp', 'temp_seasonality', 'max_temp_warmest_month', 
+                                     'min_temp_coldest_month', 'annual_precip', 'precip_wettest_month', 
+                                     'precip_driest_month', 'precip_seasonality')
 
 # %% Define years and functions for calculating SVIs
-years = ee.List.sequence(2006, 2015)
+years = ee.List.sequence(2000, 2023)
 year_info = years.size().getInfo()
-year_info
+
 # functions for vegetation indices calculations
-#bands = ee.List(['blue', 'green', 'red', 'nir', 'swir1', 'swir2', 'ndvi', 'evi', 'mndwi', 'nbr', 'vari', 'savi', 'tcb', 'tcg', 'tcw'])
-bands = ee.List(['ndvi', 'evi', 'mndwi', 'nbr', 'vari', 'savi', 'tcb', 'tcg', 'tcw'])
+bands = ee.List(['blue', 'green', 'red', 'nir', 'swir1', 'swir2', 'ndvi', 'evi', 'mndwi', 'nbr', 'vari', 'savi', 'tcb', 'tcg', 'tcw'])
 
 # normalized difference vegetation index
 def ndvi_calc(img):
@@ -102,7 +113,7 @@ def savi_calc(img):
         .multiply(10000.0) \
         .toInt16()
     return savi
-# tasseled cap transformations
+# tasseled cap transformations // are these coefficients correct for our imagery?
 def tasseled_cap(img):
     # coefficients
     brightness_coeff = ee.Image([0.2043, 0.4158, 0.5524, 0.5741, 0.3124, 0.2303])
@@ -205,11 +216,11 @@ def get_landsat_collection_sr(sensor):
     return collection_filtered_without_date
 
 # %% Iterate
-image_collection = ee.ImageCollection([])
-pv_df = []
-all_dfs = []
+pv_dataframe_landis = []
 for i in range(year_info):
     year = years.get(i).getInfo()
+    startDate = ee.Date.fromYMD(year, 1, 1)
+    endDate =   ee.Date.fromYMD(year, 12, 31)
 
     #seasonal windows
     startSeason1 = ee.Date.fromYMD(year, 3, 1)
@@ -221,10 +232,11 @@ for i in range(year_info):
         
     ################################################
     #get this to work for startSeason endSeason
-    def get_landsat_Images(sensor, AK_landscape, startSeason, endSeason):  
+    def get_landsat_Images(sensor, AK_landscape, startDate, endDate, startSeason, endSeason):  
         collection = get_landsat_collection_sr(sensor)
         cleaned_images = (collection
                             .filterBounds(AK_landscape)
+                            .filterDate(startDate, endDate)
                             .filterDate(startSeason, endSeason)
                             .map(cloud_mask_landsat8)
                             .map(add_indices))
@@ -238,85 +250,77 @@ for i in range(year_info):
         fall_images = ee.ImageCollection([])
 
         for sensor in sensors:
-            spring_images = spring_images.merge(get_landsat_Images(sensor, AK_landscape, startSeason1, endSeason1))
-            summer_images = summer_images.merge(get_landsat_Images(sensor, AK_landscape, startSeason2, endSeason2))
-            fall_images = fall_images.merge(get_landsat_Images(sensor, AK_landscape, startSeason3, endSeason3))
+            spring_images = spring_images.merge(get_landsat_Images(sensor, AK_landscape, startDate, endDate, startSeason1, endSeason1))
+            summer_images = summer_images.merge(get_landsat_Images(sensor, AK_landscape, startDate, endDate, startSeason2, endSeason2))
+            fall_images = fall_images.merge(get_landsat_Images(sensor, AK_landscape, startDate, endDate, startSeason3, endSeason3))
         # Median composites by season
-        #springtime = add_suffix(spring_images.median().select(bands), 'spring').unmask(-9999)
-        summertime = add_suffix(summer_images.median().select(bands), 'summer').unmask(-9999)
-        #falltime = add_suffix(fall_images.median().select(bands), 'fall').unmask(-9999)
-        green_up = add_suffix(summer_images.median().subtract(spring_images.median()).select(bands), 'up').unmask(-9999)
-        brown_down = add_suffix(fall_images.median().subtract(summer_images.median()).select(bands), 'down').unmask(-9999)
+        springtime = add_suffix(spring_images.median().select(bands), '1').unmask(-9999)
+        summertime = add_suffix(summer_images.median().select(bands), '2').unmask(-9999)
+        falltime = add_suffix(fall_images.median().select(bands), '3').unmask(-9999)
 
         # add each composite as bands
-        return green_up.addBands(summertime).addBands(brown_down)
+        return springtime.addBands(summertime).addBands(falltime)
 
 
     # apply the function appending the image at each iteration to our list of images
-    landsat_composite = make_ls(AK_landscape).clip(AK_landscape).reproject(crs='EPSG:3338', scale=30).int16()
-    landsat_and_topo_layers = landsat_composite.addBands(topo_layers)               
+    landsat_composite = make_ls(AK_landscape).clip(AK_landscape).reproject(crs='EPSG:3338', scale=30)
+    full_composite = landsat_composite.addBands(soil_renamed)\
+                                      .addBands(topo_renamed)\
+                                      .addBands(Clim_vars_renamed)\
+                                      .clip(AK_landscape)\
+                                      .reproject(crs='EPSG:3338', scale=30)\
+                                      .int16()
+                                     
 
-    #save the composite
-    # geom = AK_landscape.geometry()
-    # task = ee.batch.Export.image.toDrive(
-    #     image=landsat_and_topo_layers,
-    #     description=f'FullComp_Interior_{year}',
-    #     folder='Alaska_Proj',
-    #     region=geom,
-    #     scale=30,
-    #     crs='EPSG:3338',
-    #     maxPixels=1e13)
-    # task.start()
-
-    # Add the composite to the ImageCollection
-    #image_collection = image_collection.merge(ee.Image([landsat_composite]))
-
-    # Sampling process
+    #sampling and exporting
+    img = full_composite
     def get_pixel_values(f, img):
-        return f.setMulti(img.reduceRegion(
+        mean = full_composite.reduceRegion(
             reducer=ee.Reducer.mean(),
             geometry=f.geometry(),
             scale=30,
-            crs='EPSG:3338'
-        ))
-    cafiPlots = ee.FeatureCollection(f'projects/ee-vegshiftsalaska/assets/biomass-all-years/biomass_{year}')
-    def sample_pixels(f):
-        return get_pixel_values(f)
+            crs='EPSG:3338')
+        return f.setMulti(mean)
 
-    pv_sampling = cafiPlots.map(lambda f: get_pixel_values(f, landsat_and_topo_layers))
+    
+    pv_sampling = cafiPlots.map(lambda f: get_pixel_values(f, img))
+    
 
-    pv_sampling_info = pv_sampling.getInfo()
+    ################ export tasks 
+    # Image composite to G drive
+    # Sampling data to local or g drive
 
-    # apply the sample function and export locally 
-    for feature in pv_sampling_info['features']:
-        properties = feature['properties']
-        pv_df.append(properties)
-    extracted_pv_vals = pd.DataFrame(pv_df)
-    all_dfs.append(extracted_pv_vals)
+    #export image to google drive
+    geom = AK_landscape.geometry()
+    task = ee.batch.Export.image.toDrive(
+        image=full_composite,
+        description=f'FullComp_Dalton_{year}',
+        folder='Alaska_Proj',
+        region=geom,
+        scale=30,
+        crs='EPSG:3338',
+        maxPixels=1e13)
+    task.start()
+
+    # apply the sample function and export locally for interior
+    #pv_values_interior = pv_sampling.getInfo()
 
 
-#bind
-final_df = pd.concat(all_dfs, ignore_index=True)
-#final_df.to_csv('/Users/wancher/Documents/thesis/data/output/pixel-vals-indices-topo.csv', index=False) 
-# %%  
-# export to image collection
-# geom = AK_landscape.geometry()
-# export_task = ee.batch.Export.image.toAsset(
-#     image=image_collection.mosaic(),  # You can mosaic all images or export them individually
-#     description='interior-full-composites',
-#     assetId='projects/ee-vegshiftsalaska/assets/interior_full_composites', 
-#     region=geom,
-#     scale=30,
-#     crs='EPSG:3338',
-#     maxPixels=1e13
-# )
-#export_task.start()
 
-# %% Optionally, export pixel sampling data (CSV)
-# landis_region_task = ee.batch.Export.table.toDrive(
-#     collection=pv_sampling,
-#     description=f'PixelVals_Landis_{year}_V2',
-#     folder='Alaska_Proj',
-#     fileFormat='CSV'
-# )
-# landis_region_task.start()
+    # apply the sample function and export locally for model region
+    # for feature in pv_values_interior['features']:
+    #     properties = feature['properties']
+    #     pv_dataframe_landis.append(properties)
+    # extracted_pv_vals_landis = pd.DataFrame(pv_dataframe_landis)
+    # extracted_pv_vals_landis.to_csv(f'D:/MS-Research/alaska/data/output/csv/cleaned/GEE_Sampling_Data_BiomassLandisRegion/PixelVals_Interior_{year}.csv')
+    
+    # # or to g drive
+    # landis_region_task = ee.batch.Export.table.toDrive(
+    #     collection=pv_sampling_landis,
+    #     description=f'PixelVals_Landis_{year}_V2',
+    #     folder='Alaska_Proj',
+    #     fileFormat='CSV')
+    # landis_region_task.start()
+    
+    
+# %%
