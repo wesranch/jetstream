@@ -1,5 +1,7 @@
 #!/bin/bash
 
+sudo apt install unzip
+
 # check if AWS is installed
 if ! command -v aws &>/dev/null; then
     echo "Installing AWS CLI..."

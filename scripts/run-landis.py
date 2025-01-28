@@ -3,12 +3,13 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import argparse
-batch_file = "historic-ncar.bat"
+#batch_file = "historic-ncar.bat"
 
 # function to run landis batch files in the docker container
 def run_batch_file_in_container(batch_file, mount_path, container_name):
     try:
-        command = f'sudo docker exec -it {container_name} cmd/c {mount_path}/{batch_file}'
+        #cmd /c bash or wine cmd /c
+        command = f'sudo docker exec -it {container_name} cmd /c {mount_path}/{batch_file}'
         subprocess.run(command, shell=True, check=True)
         print(f"Completed {batch_file}.")
         return True
@@ -43,9 +44,9 @@ if __name__ == '__main__':
     # command line arg parsing
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--num_replicates", type=int, required=True, help="Number of replicates to process")
-    #arg_parser.add_argument("--batch_files", nargs='+', type=str, 
-    #                        default=['historic-ncar.bat', 'future-ncar.bat', 'future-gfdl.bat'], 
-    #                        help="Batch files to run (comma-separated)")
+    arg_parser.add_argument("--batch_files", nargs='+', type=str, 
+                            default=['historic-ncar.bat', 'future-ncar.bat', 'future-gfdl.bat'], 
+                            help="Batch files to run (comma-separated)")
     arg_parser.add_argument("--container_name", type=str, required=True, help="Docker container name")
     arg_parser.add_argument("--access_id", type=str, required=True, help="User access ID")
 
@@ -57,9 +58,9 @@ if __name__ == '__main__':
 
     # get environment vars
     num_replicates = args.num_replicates
-    #batch_files = args.batch_files
+    batch_files = args.batch_files
     print(f"Number of reps: {num_replicates}")
-    #print(f"Scenarios: {batch_files}")
+    print(f"Scenarios: {batch_files}")
 
     access_id = args.access_id
     container_name = args.container_name

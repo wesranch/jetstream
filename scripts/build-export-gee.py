@@ -3,9 +3,9 @@
 
 # %% start GEE session
 import ee
-import geemap
 import pandas as pd
-
+import folium
+from geemap import geemap
 #ee.Reset()
 ee.Authenticate()
 ee.Initialize()
@@ -13,15 +13,15 @@ ee.Initialize()
 # %% Read in some ROI files and sampling data
 
 #AK_landscape_model_region = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
-#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
+AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
 #AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/boreal_AK')
 states = ee.FeatureCollection('TIGER/2016/States') 
-AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
+#AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
 
 #Map = geemap.Map(center=[64, -152], zoom=5, basemap='Esri.WorldGrayCanvas')
 
 # topographic data
-topo_data = ee.ImageCollection('JAXA/ALOS/AW3D30/V3_2').filterBounds(AK_landscape).select('DSM')
+topo_data = ee.ImageCollection('JAXA/ALOS/AW3D30/V3_2').select('DSM')
 
 elevation = topo_data.mosaic().reproject(crs='EPSG:4326', scale=30)
 slope = ee.Terrain.slope(topo_data.mosaic().reproject(crs='EPSG:4326', scale=30))
@@ -161,9 +161,9 @@ def harmonization(img):
     slopes = ee.Image([0.8474, 0.8483, 0.9047, 0.8462, 0.8937, 0.9071])
     intercepts = ee.Image([0.0003, 0.0088, 0.0061, 0.0412, 0.0254, 0.0172])
     img_harm = img.select(['blue', 'green', 'red', 'nir', 'swir1', 'swir2']) \
-                  .multiply(slopes) \
-                  .add(intercepts.multiply(10000)) \
-                  .int16()
+        .multiply(slopes) \
+        .add(intercepts.multiply(10000)) \
+        .int16()
     return img.select().addBands(img_harm).addBands(img.select('pixel_qa'))
 
 
@@ -188,6 +188,117 @@ def cloud_mask_landsat8(img):
     image_cloud_masked = img.updateMask(cloudM).addBands(cloudM)
     return image_cloud_masked
 
+#%% Illumination condition
+# https://mygeoblog.com/2018/10/17/terrain-correction-in-gee/
+def illuminationCondition(img):
+    #img = test_image_correcting
+    #img_proj = img.projection()
+    # Extract image metadata about solar position (azimuth and zenith)
+    azimuth_rad = ee.Image.constant(ee.Number(img.get('SUN_AZIMUTH')).multiply(3.14159265359).divide(180))
+    zenith_rad = ee.Image.constant(ee.Number(90).subtract(img.get('SUN_ELEVATION')).multiply(3.14159265359).divide(180))
+    
+    # Create terrian layers (slope and aspect)
+    #the DEM is in a computed projection so we need to reproject
+    topo_data = ee.ImageCollection('JAXA/ALOS/AW3D30/V3_2') \
+        .filterBounds(AK_landscape) \
+        .select('DSM') \
+        .mosaic() \
+        .reproject(crs='EPSG:4326', scale=30)
+
+    #slope = ee.Terrain.slope(topo_data_mosaic)
+    #Map.addLayer(slope, {'min': 0, 'max': 45, 'palette': ['blue', 'green', 'yellow', 'red']}, 'Slope')
+    slope_rad = ee.Terrain.slope(topo_data).multiply(3.14159265359).divide(180)  # radians
+    aspect_rad = ee.Terrain.aspect(topo_data).multiply(3.14159265359).divide(180)  # radians
+
+    # Calculate Illumination Condition (IC)
+    ## slope part of calc
+    cos_zenith = zenith_rad.cos()
+    cos_slope = slope_rad.cos()
+    slope_illumination = cos_zenith.multiply(cos_slope)
+
+    #Map.addLayer(slope_illumination, {'min': 0, 'max': .5, 'palette': ['blue', 'green', 'yellow', 'red']}, 'Slope Illumination')
+    ## aspect part of calc
+    sin_zenith = zenith_rad.sin()
+    sin_slope = slope_rad.sin()
+    cosAzmithDiff = (azimuth_rad.subtract(aspect_rad)).cos()
+    aspect_illumination = sin_zenith.multiply(sin_slope).multiply(cosAzmithDiff)
+    
+    # full illumination condition 
+    IC = slope_illumination.add(aspect_illumination)
+    
+    #add IC to image
+    img_IC = img.addBands(IC.rename('IC'))\
+        .addBands(cos_zenith.rename('cosZ'))\
+        .addBands(cos_slope.rename('cosS'))\
+        .addBands(slope.rename('slope'))
+    return img_IC
+
+#%% Illumination correction
+# Function to apply the Sun-Canopy-Sensor + C (SCSc) correction method to each image. 
+# Function by Patrick Burns and Matt Macander 
+def illumination_correction(img):
+    img_with_IC = illuminationCondition(img) 
+    
+    #used for testing
+    # stats = img_plus_IC.reduceRegion(
+    #     reducer=ee.Reducer.minMax(),  # Computes min and max values
+    #     geometry=img_plus_IC.geometry(),  # Use the image's geometry (whole image)
+    #     scale=30,  # Specify the scale (adjust as needed)
+    #     maxPixels=1e13  # Set a high maxPixels value to allow full processing
+    # )
+    # info = stats.getInfo()
+    #mask1 = img_plus_IC.select('nir').gt(-0.1)
+
+    #landsat collection is scaled
+    mask2 = img_with_IC.select('slope').gte(5) \
+        .And(img_with_IC.select('IC').gte(0)) \
+        .And(img_with_IC.select('nir').gt(-6535.5))
+    img_plus_IC_mask2 = img_with_IC.updateMask(mask2)
+    
+    # bands to topo correct
+    band_list = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
+
+    def apply_scsc_corr(band):
+        # reducer for linear fit
+        fit = img_plus_IC_mask2.select(['IC', band]).reduceRegion(
+            reducer=ee.Reducer.linearFit(),
+            scale=30,
+            maxPixels=1e9
+        )
+        
+        # check if the reduction result is empty
+        if fit is None or not fit.get('scale') or not fit.get('offset'):
+            return img_plus_IC_mask2.select(band)
+
+        # linear fit coefficients
+        a = ee.Number(fit.get('scale'))#slope
+        b = ee.Number(fit.get('offset'))#lm intercept
+        #out_c = out_b.divide(out_a)
+        c = ee.Algorithms.If(a.gt(0), b.divide(a), ee.Number(0))
+
+        #correction
+        #get bands
+        band_image = img_plus_IC_mask2.select(band)
+        IC_image = img_plus_IC_mask2.select('IC')
+        cosS_image = img_plus_IC_mask2.select('cosS')
+        cosZ_image = img_plus_IC_mask2.select('cosZ')
+        
+        # apply the final formula to divide by IC
+        scsc_output = img_plus_IC_mask2.expression(
+            "((image * (cosB * cosZ + cvalue)) / (IC + cvalue))", {
+                'image': band_image,
+                'IC': IC_image,
+                'cosB': cosS_image,
+                'cosZ': cosZ_image,
+                'cvalue': c})
+        
+        return scsc_output
+    
+    # corrected_bands = band_list.map(apply_scsc_corr)
+    corrected_bands = [apply_scsc_corr(band) for band in band_list]
+    img_scsc_corr = ee.Image(corrected_bands).addBands(img.select('IC'))
+    return img_scsc_corr.select(band_list)
+#%% Get Collection
 # renaming bands
 def get_landsat_collection_sr(sensor):
     if sensor in ['LC08', 'LC09']:
@@ -209,7 +320,7 @@ image_collection = ee.ImageCollection([])
 pv_df = []
 all_dfs = []
 for i in range(year_info):
-    year = years.get(i).getInfo()
+    year = years.get(9).getInfo()
 
     #seasonal windows
     startSeason1 = ee.Date.fromYMD(year, 3, 1)
@@ -224,10 +335,11 @@ for i in range(year_info):
     def get_landsat_Images(sensor, AK_landscape, startSeason, endSeason):  
         collection = get_landsat_collection_sr(sensor)
         cleaned_images = (collection
-                            .filterBounds(AK_landscape)
-                            .filterDate(startSeason, endSeason)
-                            .map(cloud_mask_landsat8)
-                            .map(add_indices))
+            .filterBounds(AK_landscape)
+            .filterDate(startSeason, endSeason)
+            .map(cloud_mask_landsat8)
+            .map(illumination_correction)
+            .map(add_indices))
         return cleaned_images
 
     # function to bring everything together            
@@ -256,17 +368,18 @@ for i in range(year_info):
     landsat_composite = make_ls(AK_landscape).clip(AK_landscape).reproject(crs='EPSG:3338', scale=30).int16()
     landsat_and_topo_layers = landsat_composite.addBands(topo_layers)               
 
+    
+    geom = AK_landscape.geometry()
     #save the composite
-    # geom = AK_landscape.geometry()
-    # task = ee.batch.Export.image.toDrive(
-    #     image=landsat_and_topo_layers,
-    #     description=f'FullComp_Interior_{year}',
-    #     folder='Alaska_Proj',
-    #     region=geom,
-    #     scale=30,
-    #     crs='EPSG:3338',
-    #     maxPixels=1e13)
-    # task.start()
+    task = ee.batch.Export.image.toDrive(
+        image=landsat_composite,
+        description=f'FullComp_Dalton_{year}_V2.tif',
+        folder='Alaska_Proj',
+        region=geom,
+        scale=30,
+        crs='EPSG:3338',
+        maxPixels=1e13)
+    task.start()
 
     # Add the composite to the ImageCollection
     #image_collection = image_collection.merge(ee.Image([landsat_composite]))
@@ -277,8 +390,8 @@ for i in range(year_info):
             reducer=ee.Reducer.mean(),
             geometry=f.geometry(),
             scale=30,
-            crs='EPSG:3338'
-        ))
+            crs='EPSG:3338'))
+    
     cafiPlots = ee.FeatureCollection(f'projects/ee-vegshiftsalaska/assets/biomass-all-years/biomass_{year}')
     def sample_pixels(f):
         return get_pixel_values(f)

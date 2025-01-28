@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # run the container
-sudo docker container run -d -p 127.0.0.1:8080:7681 -v ~/landis/input:/container/scripts esiil/landis_v8:latest
+sudo docker container run -d -p 127.0.0.1:8080:7681 -v ~/landis/input:/container/data esiil/landis_v8:latest
 
 # output container name
 container_name=$(sudo docker container ls --format '{{.Names}}' | tail -n 1)
@@ -12,18 +12,18 @@ echo "Container started: $container_name"
 read -p "Number of replicates to run?" num_replicates
 read -p "access ID?:" access_id
 
-#export batch_files
+export batch_files
 export access_id
 export num_replicates
 
-#echo "scenarios: "$batch_files""
+echo "scenarios: "$batch_files""
 echo "reps: "$num_replicates""
 
 #install python boto3 for the python script
-pip3 install boto3
-
-python3 run-landis.py \
+pip3 install boto3 #not working
+mv run-landis.py landis/run-landis.py
+python3 landis/run-landis.py \
     --container_name "$container_name" \
-    #--batch_files "$batch_files" \
+    --batch_files "$batch_files" \
     --access_id "$access_id" \
     --num_replicates "$num_replicates"
