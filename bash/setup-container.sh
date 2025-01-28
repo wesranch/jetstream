@@ -21,8 +21,9 @@ echo "reps: "$num_replicates""
 
 #install python boto3 for the python script
 pip3 install boto3 #not working
-mv run-landis.py landis/run-landis.py
-python3 landis/run-landis.py \
+
+mv ~run-landis.py ~landis/input/run-landis.py
+python3 ~landis/input/run-landis.py \
     --container_name "$container_name" \
     --batch_files "$batch_files" \
     --access_id "$access_id" \

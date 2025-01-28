@@ -22,6 +22,11 @@ mkdir -p ~/landis/input ~/landis/scripts ~/landis/output
 aws s3 sync s3://landis-ii-input/interior-AK-input ~/landis/input --endpoint-url "$S3_ENDPOINT_URL"
 
 #make scripts executable 
-chmod +x ~/landis/input/historic-ncar.sh
-chmod +x ~/landis/input/future-ncar.sh
-chmod +x ~/landis/input/future-gfdl.sh
+rm ~/landis/input/historic-ncar.sh
+rm +x ~/landis/input/future-ncar.sh
+rm +x ~/landis/input/future-gfdl.sh
+
+#move updated SH scripts
+mv ~HISTORIC-NCAR.sh ~/landis/input/historic-ncar.sh
+mv ~FUTURE-NCAR.sh ~/landis/input/future-ncar.sh
+mv ~FUTURE-GFDL.sh ~/landis/input/future-gfdl.sh 

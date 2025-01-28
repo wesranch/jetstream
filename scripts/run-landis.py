@@ -9,7 +9,7 @@ import argparse
 def run_batch_file_in_container(batch_file, mount_path, container_name):
     try:
         #cmd /c bash or wine cmd /c
-        command = f'sudo docker exec -it {container_name} cmd /c {mount_path}/{batch_file}'
+        command = f'sudo docker exec -it {container_name} bash {mount_path}/{batch_file}'
         subprocess.run(command, shell=True, check=True)
         print(f"Completed {batch_file}.")
         return True
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--num_replicates", type=int, required=True, help="Number of replicates to process")
     arg_parser.add_argument("--batch_files", nargs='+', type=str, 
-                            default=['historic-ncar.bat', 'future-ncar.bat', 'future-gfdl.bat'], 
+                            default=['historic-ncar.sh', 'future-ncar.sh', 'future-gfdl.sh'], 
                             help="Batch files to run (comma-separated)")
     arg_parser.add_argument("--container_name", type=str, required=True, help="Docker container name")
     arg_parser.add_argument("--access_id", type=str, required=True, help="User access ID")
