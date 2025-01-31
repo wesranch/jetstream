@@ -10,23 +10,12 @@ if ! command -v aws &>/dev/null; then
     sudo ./aws/install
 fi
 
-# configure aws
-#mkdir -p ~/.aws
+# configure aws (could be prompted)
 export S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-"https://usgs2.osn.mghpcc.org"}
 aws configure
 
 # download input data from S3
-mkdir -p ~/landis/input ~/landis/scripts ~/landis/output
+mkdir -p ~/landis/input ~/landis/output/
 
 #landis input files
 aws s3 sync s3://landis-ii-input/interior-AK-input ~/landis/input --endpoint-url "$S3_ENDPOINT_URL"
-
-#make scripts executable 
-rm ~/landis/input/historic-ncar.sh
-rm +x ~/landis/input/future-ncar.sh
-rm +x ~/landis/input/future-gfdl.sh
-
-#move updated SH scripts
-mv ~HISTORIC-NCAR.sh ~/landis/input/historic-ncar.sh
-mv ~FUTURE-NCAR.sh ~/landis/input/future-ncar.sh
-mv ~FUTURE-GFDL.sh ~/landis/input/future-gfdl.sh 

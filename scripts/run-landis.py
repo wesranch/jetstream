@@ -3,13 +3,12 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import argparse
-#batch_file = "historic-ncar.bat"
 
 # function to run landis batch files in the docker container
-def run_batch_file_in_container(batch_file, mount_path, container_name):
+def run_batch_file_in_container(batch_file, mount_path, container_name, local_output_folder):
     try:
-        #cmd /c bash or wine cmd /c
-        command = f'sudo docker exec -it {container_name} bash {mount_path}/{batch_file}'
+        #run
+        command = f'sudo docker exec -it -v {local_output_folder}:/output {container_name} bash -c "{mount_path}/{batch_file}"'
         subprocess.run(command, shell=True, check=True)
         print(f"Completed {batch_file}.")
         return True
@@ -23,7 +22,13 @@ def process_replicate(rep_id, batch_files, mount_path, output_folder, container_
     os.makedirs(local_output_folder, exist_ok=True)
 
     for scenario_name, batch_file in batch_files:
-        local_batch_file = os.path.join(local_output_folder, batch_file)
+        scenario = os.path.splitext(batch_file)[0]
+         
+        local_batch_file = os.path.join(local_output_folder, scenario)
+        os.makedirs(local_batch_file, exist_ok=True)  #create folder if needed
+        print(f"Local output path: /home/wrancher/landis/output/rep{rep_id}/{scenario}")
+
+
         if not os.path.exists(local_batch_file):
             print(f"Missing {batch_file} for replicate {rep_id}.")
             continue
@@ -35,42 +40,34 @@ def process_replicate(rep_id, batch_files, mount_path, output_folder, container_
         print(f"Scenario {scenario_name}, replicate {rep_id} done.")
 
 #main processing function
-def main(num_replicates, batch_files, mount_path, output_folder, container_name):
+def main(reps, batch_files, mount_path, output_folder, container_name):
     with ThreadPoolExecutor() as executor:
-        executor.map(lambda rep_id: process_replicate(rep_id, batch_files, mount_path, output_folder, container_name), range(1, num_replicates + 1))
+        executor.map(lambda rep_id: process_replicate(rep_id, batch_files, mount_path, output_folder, container_name), reps)
 
 #using arg parser to take specified environment variables from the cli and use as vars in this script
 if __name__ == '__main__':
+    #batch files
+    batch_files = ["historic-ncar.sh", "future-ncar.sh", "future-gfdl.sh"]
+    reps = range(1,3)
+
     # command line arg parsing
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("--num_replicates", type=int, required=True, help="Number of replicates to process")
-    arg_parser.add_argument("--batch_files", nargs='+', type=str, 
-                            default=['historic-ncar.sh', 'future-ncar.sh', 'future-gfdl.sh'], 
-                            help="Batch files to run (comma-separated)")
     arg_parser.add_argument("--container_name", type=str, required=True, help="Docker container name")
     arg_parser.add_argument("--access_id", type=str, required=True, help="User access ID")
 
     #parse
     args = arg_parser.parse_args()
 
-    #split the batch files if many
-    #batch_files = [(name.strip(), name.strip() + '.sh') for name in args.batch_files]
-
     # get environment vars
-    num_replicates = args.num_replicates
-    batch_files = args.batch_files
-    print(f"Number of reps: {num_replicates}")
-    print(f"Scenarios: {batch_files}")
-
     access_id = args.access_id
     container_name = args.container_name
     print(f"Access ID: {access_id}")
     print(f"Container name: {container_name}")
 
     # set mount path and output folder
-    mount_path = f'/home/{access_id}/landis/input/' #mounting locally in js2 instance
+    mount_path = "/home/user"
     output_folder = f'/home/{access_id}/landis/output/'
     print(f"Output folder: {output_folder}")
 
     # run the main function
-    main(num_replicates, mount_path, output_folder, container_name)
+    main(reps, batch_files, mount_path, output_folder, container_name)
