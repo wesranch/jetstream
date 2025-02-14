@@ -1,7 +1,5 @@
 FROM ubuntu:22.04
 
-USER root
-
 #need to get to build in js2
 
 ################################################################
@@ -15,9 +13,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # PREPARING PACKAGES AND UPGRADING, AND INSTALLING DEPENDENCIES OF LANDIS-II
 # apt-get clean and rm -rf /var/lib/apt/lists/* are used to clear the packages folder caches
 # to avoid putting them in the docker layerin system, freeing space
-RUN apt update && apt upgrade \
+RUN apt-get update && apt-get upgrade -y \
 && apt-get install -y sudo apt-transport-https \
-&& apt-get update && apt-get -y upgrade \
+&& apt-get install -y ca-certificates gnupg curl software-properties-common \
 && apt-get install -y wget vim pip nano git python3 python-is-python3 \
 && apt-get install -y libjpeg62 \
 && apt-get install -y libpng16-16 \
@@ -43,7 +41,7 @@ ENV DOTNET_ROOT=/bin/.dotnet
 ENV PATH=$PATH:$DOTNET_ROOT:$DOTNET_ROOT/tools
 
 # PREPARING VARIABLES FOR DOWNLOADS
-# WARNING : With a bad internet connection, git clone can sometimes fail to.
+# WARNING : With a bad internet connection, git clone can sometimes fail too.
 # These commands should help git on bad internet connections
 RUN git config --global http.version HTTP/1.1 \
 && git config --global http.postBuffer 524288000 \
@@ -619,5 +617,56 @@ RUN adduser --disabled-password --gecos "VICE_User" --uid 1000 user  && \
 # # Re-configure git for latest version of HTTP protocol
 RUN git config --global --unset http.version
 
-# TO FINISH : Put things OUT of Core-Model-v8-Linux in into LANDIS_Linux, and update environ var if needed.
+# install ttyd
+RUN wget "https://github.com/tsl0922/ttyd/releases/download/1.6.3/ttyd.x86_64" > ttyd \
+&& chmod a+x ttyd \
+&& mv ttyd /usr/local/bin/ttyd
 
+RUN apt-get update \
+&& apt-get install -y curl grep sed dpkg \
+&& curl -L "https://github.com/krallin/tini/releases/download/v0.19.0/tini_0.19.0-amd64.deb" > tini.deb \
+&& dpkg -i tini.deb \
+&& rm tini.deb \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/*
+
+# Install a few dependencies for iCommands, text editing, and monitoring instances
+RUN apt-get update \
+&& apt-get install -y lsb-release apt-transport-https curl gnupg2 libfuse2 gcc less nodejs software-properties-common apt-utils glances htop nano \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update \
+&& apt-get install -y vim-nox \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update \
+&& apt-get install -y emacs-nox \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/*
+
+RUN wget -qO - https://packages.irods.org/irods-signing-key.asc | apt-key add - \
+&& echo "deb [arch=amd64] https://packages.irods.org/apt/ $(lsb_release -sc) main" >> /etc/apt/sources.list.d/renci-irods.list \
+&& apt-get update \
+&& apt install -y irods-icommands 
+
+USER root
+
+# set shell as bash and terminal as linux
+ENV SHELL=bash
+ENV TERM=xterm
+EXPOSE 7681
+
+# changes tmux layout while running
+COPY entry.sh /bin
+
+RUN chmod +x /bin/entry.sh
+
+RUN echo 'set-option -g status off' >> ~/.tmux.conf
+
+# add iRODS iCommands to user profile as JSON
+RUN mkdir .irods 
+
+ENTRYPOINT ["/bin/bash"]
+#CMD ["ttyd", "bash"]
