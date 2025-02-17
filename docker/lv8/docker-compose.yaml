@@ -1,0 +1,7 @@
+version: "27.4.0"
+services:
+  website:
+    images: wesranch/landis_v8:latest
+    ports:
+      - "7681:7681"
+    restart: always

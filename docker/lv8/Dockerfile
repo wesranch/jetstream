@@ -617,56 +617,10 @@ RUN adduser --disabled-password --gecos "VICE_User" --uid 1000 user  && \
 # # Re-configure git for latest version of HTTP protocol
 RUN git config --global --unset http.version
 
-# install ttyd
-RUN wget "https://github.com/tsl0922/ttyd/releases/download/1.6.3/ttyd.x86_64" > ttyd \
-&& chmod a+x ttyd \
-&& mv ttyd /usr/local/bin/ttyd
-
-RUN apt-get update \
-&& apt-get install -y curl grep sed dpkg \
-&& curl -L "https://github.com/krallin/tini/releases/download/v0.19.0/tini_0.19.0-amd64.deb" > tini.deb \
-&& dpkg -i tini.deb \
-&& rm tini.deb \
-&& apt-get clean \
-&& rm -rf /var/lib/apt/lists/*
-
-# Install a few dependencies for iCommands, text editing, and monitoring instances
-RUN apt-get update \
-&& apt-get install -y lsb-release apt-transport-https curl gnupg2 libfuse2 gcc less nodejs software-properties-common apt-utils glances htop nano \
-&& apt-get clean \
-&& rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update \
-&& apt-get install -y vim-nox \
-&& apt-get clean \
-&& rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update \
-&& apt-get install -y emacs-nox \
-&& apt-get clean \
-&& rm -rf /var/lib/apt/lists/*
-
-RUN wget -qO - https://packages.irods.org/irods-signing-key.asc | apt-key add - \
-&& echo "deb [arch=amd64] https://packages.irods.org/apt/ $(lsb_release -sc) main" >> /etc/apt/sources.list.d/renci-irods.list \
-&& apt-get update \
-&& apt install -y irods-icommands 
-
 USER root
 
 # set shell as bash and terminal as linux
-ENV SHELL=bash
-ENV TERM=xterm
+#ENV SHELL=bash
+#ENV TERM=xterm
 EXPOSE 7681
 
-# changes tmux layout while running
-COPY entry.sh /bin
-
-RUN chmod +x /bin/entry.sh
-
-RUN echo 'set-option -g status off' >> ~/.tmux.conf
-
-# add iRODS iCommands to user profile as JSON
-RUN mkdir .irods 
-
-ENTRYPOINT ["/bin/bash"]
-#CMD ["ttyd", "bash"]
