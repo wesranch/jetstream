@@ -31,7 +31,8 @@ library(viridis)
 ################################################################################
 # read in training data
 dir <- "/Users/wancher/Documents/thesis/"
-landsat_topo <- read.csv(paste0(dir, "data/output/pixel-vals-indices-topo.csv"))
+landsat_topo <- read.csv(paste0(dir, "data/output/pixel-vals-corrected-some.csv"))
+#landsat_topo <- read.csv(paste0(dir, "data/output/pixel-vals-indices-topo.csv"))
 clim_perma <- read.csv(paste0(dir, "data/output/pixel-vals-climate-perma.csv"))
 clim_perma <- clim_perma[c(1,2,3,4,7)]#gfdl only
 clim_perma <- clim_perma[c(2,3,5,6,7)]#ccsm only
