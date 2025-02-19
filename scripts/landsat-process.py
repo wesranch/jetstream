@@ -10,11 +10,11 @@ ee.Authenticate()
 ee.Initialize()
 
 # %% Area of interest and topo data
-AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
+#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
 #AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
 #AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/boreal_AK')
 states = ee.FeatureCollection('TIGER/2016/States') 
-#AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
+AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
 
 Map = geemap.Map(center=[64, -152], zoom=5, basemap='Esri.WorldGrayCanvas')
 
@@ -26,7 +26,7 @@ aspect = ee.Terrain.aspect(topo_data.mosaic().reproject(crs='EPSG:4326', scale=3
 topo_layers = elevation.addBands(slope).addBands(aspect)
 
 # %% time range of interest
-years = ee.List.sequence(2000, 2015)
+years = ee.List.sequence(2000, 2024)
 year_info = years.size().getInfo()
 year_info
 
@@ -126,7 +126,8 @@ def illumination_correction(img):
         .And(img.select('IC').gte(0)) \
         .And(img.select('nir').gt(-0.38)) #shift in scale from 0-1 to -.2-1.6
     img_plus_IC_mask2 = img.updateMask(mask2)
-    
+    #invalid_mask = img.select('nir').lte(-0.38)
+    #img_with_na = img_plus_IC_mask2.where(invalid_mask, -9999)
     # bands to correct
     band_list = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']
     def apply_scsc_corr(band):
@@ -280,7 +281,7 @@ def get_landsat_collection_sr(sensor):
         bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 'QA_PIXEL']
     #sensor = 'LC08'
     band_names_landsat = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2', 'pixel_qa']
-    cloud_threshold = 90
+    cloud_threshold = 100
     collection_filtered_without_date = ee.ImageCollection('LANDSAT/' + sensor + '/C02/T1_L2') \
         .filterBounds(AK_landscape)\
         .filterMetadata('CLOUD_COVER', 'less_than', cloud_threshold) \
@@ -288,7 +289,7 @@ def get_landsat_collection_sr(sensor):
     return collection_filtered_without_date
 # %% Iterate
 for i in range(year_info):
-    year = years.get(15).getInfo()
+    year = years.get(0).getInfo()
 
     #seasonal windows
     startSeason1 = ee.Date.fromYMD(year, 3, 1)
@@ -313,7 +314,7 @@ for i in range(year_info):
 
     # function to bring everything together            
     def make_ls(AK_landscape):
-        tcc_bands = ee.List(['red', 'green', 'blue'])
+        #tcc_bands = ee.List(['red', 'green', 'blue'])
         bands_indices = ee.List(['ndvi', 'evi', 'mndwi', 'nbr', 'vari', 'savi', 'tcb', 'tcg', 'tcw'])
         sensors = ['LC08', 'LC09', 'LE07', 'LT05']
         spring_images = ee.ImageCollection([])
@@ -327,7 +328,7 @@ for i in range(year_info):
         
         # Median composites by season
         #springtime = add_suffix(spring_images.median().select(bands), 'spring').unmask(-9999)
-        summertime = add_suffix(summer_images.median().select(tcc_bands), 'summer')
+        summertime = add_suffix(summer_images.median().select(bands_indices), 'summer')
         #falltime = add_suffix(fall_images.median().select(bands), 'fall').unmask(-9999)
         green_up = add_suffix(summer_images.median().subtract(spring_images.median()).select(bands_indices), 'up')
         brown_down = add_suffix(fall_images.median().subtract(summer_images.median()).select(bands_indices), 'down')
@@ -337,9 +338,9 @@ for i in range(year_info):
 
 
     #make composite
-    tcc_bands_sum = ee.List(['red_summer', 'green_summer', 'blue_summer'])
+    #tcc_bands_sum = ee.List(['red_summer', 'green_summer', 'blue_summer'])
     landsat_composite = make_ls(AK_landscape).clip(AK_landscape).reproject(crs='EPSG:3338', scale=30)
-    Map.addLayer(landsat_composite, tcc_params, f'tcc {year} c80 type 1')
+    #Map.addLayer(landsat_composite, tcc_params, f'tcc {year}')
     landsat_and_topo_layers = landsat_composite.addBands(topo_layers)\
         .reproject(crs='EPSG:3338', scale=30)\
         .clip(AK_landscape)
@@ -347,14 +348,14 @@ for i in range(year_info):
     #save composite
     geom = AK_landscape.geometry()
     task = ee.batch.Export.image.toDrive(
-        image=landsat_composite.select(tcc_bands_sum),
+        image=landsat_composite,
         description=f'tcc-{year}-MASKED-c90',
         folder='Alaska_Proj',
         region=geom,
         scale=30,
         crs='EPSG:3338',
         maxPixels=1e13)
-    task.start()
+    #task.start()
 
     # Sampling process
     def get_pixel_values(f, img):
@@ -364,15 +365,15 @@ for i in range(year_info):
             scale=30,
             crs='EPSG:3338'))
     
-    cafiPlots = ee.FeatureCollection(f'projects/ee-vegshiftsalaska/assets/biomass-all-years/biomass_{year}')
+    cafiPlots = ee.FeatureCollection(f'projects/ee-vegshiftsalaska/assets/sample-data/biomass_{year}')
     def sample_pixels(f):
         return get_pixel_values(f)
 
     pv_sampling = cafiPlots.map(lambda f: get_pixel_values(f, landsat_and_topo_layers))
     task_sampling = ee.batch.Export.table.toDrive(
-        collection=pv_sampling,
-        description=f'pixel-vals-{year}',
-        folder='Alaska_Proj',
-        fileFormat='CSV')
+       collection=pv_sampling,
+       description=f'pixel-vals-{year}',
+       folder='Alaska_Proj',
+       fileFormat='CSV')
     task_sampling.start()
 # %%

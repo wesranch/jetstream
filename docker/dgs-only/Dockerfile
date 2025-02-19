@@ -20,6 +20,7 @@ RUN apt-get update && apt-get upgrade -y \
 && apt-get install -y libpng16-16 \
 && apt-get install -y gdal-bin \
 && apt-get install -y libgdal-dev \
+&& apt-get install -y unzip \
 #&& apt-get install -y unzip \
 # Installing libssl1 sometimes needed for Dotnet
 && wget http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.0g-2ubuntu4_amd64.deb \
@@ -121,7 +122,7 @@ RUN cd /bin/LANDIS_Linux/Core-Model-v8-LINUX \
 && dotnet build -c Release ShawDammNewInputs.csproj \
 && cd /bin/LANDIS_Linux/Core-Model-v8-LINUX/ && rm -r Library-Shaw
 
-# # # DGS Succession extension
+# # DGS Succession extension
 RUN cd /bin/LANDIS_Linux/Core-Model-v8-LINUX \
 # just grab the latest for v8
 && ./downloadSpecificGitCommitAndFolder.sh https://github.com/LANDIS-II-Foundation/Extension-DGS-Succession.git v8 /src \ 
@@ -133,6 +134,18 @@ RUN cd /bin/LANDIS_Linux/Core-Model-v8-LINUX \
 && dotnet $LANDIS_EXTENSIONS_TOOL add "DGS_Succession_2.4.txt" \
 && cd /bin/LANDIS_Linux/Core-Model-v8-LINUX/ && rm -r Extension-DGS-Succession 
 
+# RUN cd /bin/LANDIS_Linux/Core-Model-v8-LINUX \
+# && wget https://github.com/LANDIS-II-Foundation/Extension-DGS-Succession/archive/refs/heads/v8.zip \
+# && unzip v8.zip -d /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/ \
+# && rm v8.zip \
+# && mv /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession-8/ /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession/ \
+# && cd /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession/src; sed -i -e 's/lib\\Landis.Library/..\\..\\Support-Library-Dlls-v8-master\\Landis.Library/g' DGS-succession.csproj \
+# && cd /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession/src; dotnet build -c Release DGS-succession.csproj \
+# && cd /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession/deploy/installer; dotnet /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/Release/Landis.Extensions.dll add "DGS_Succession 1.102.txt" \
+# && cp /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/Extension-DGS-Succession/src/bin/Debug/netstandard2.0/Landis.Extension.Succession.DGS.dll /bin/LANDIS_Linux/Core-Model-v8-LINUX/build/extensions/. 
+
+
+#&& sed -i 's|<HintPath>.*</HintPath>|<HintPath>..\\..\\build\\extensions\\Landis.Library.UniversalCohorts-v1.dll</HintPath>|' DGS-succession.csproj
 #sed -i '76i    <HintPath>..\\..\\build\\extensions\\Landis.Library.UniversalCohorts-v1.dll</HintPath>' DGS-succession.csproj
 
 RUN cd /bin/LANDIS_Linux/Core-Model-v8-LINUX \
@@ -302,4 +315,3 @@ USER root
 #ENV SHELL=bash
 #ENV TERM=xterm
 EXPOSE 7681
-
