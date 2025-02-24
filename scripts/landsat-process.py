@@ -11,10 +11,10 @@ ee.Initialize()
 
 # %% Area of interest and topo data
 #AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/LandisModelRegion') 
-#AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
+AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/Dalton_Landis') 
 #AK_landscape = ee.FeatureCollection('projects/ee-vegshiftsalaska/assets/boreal_AK')
 states = ee.FeatureCollection('TIGER/2016/States') 
-AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
+#AK_landscape = states.filter(ee.Filter.eq('NAME', 'Alaska'))
 
 Map = geemap.Map(center=[64, -152], zoom=5, basemap='Esri.WorldGrayCanvas')
 
@@ -63,21 +63,23 @@ def scale_and_offset(img):
 
 def cloud_mask_landsat8(img):
     quality_band = img.select('pixel_qa')
-    cloud_shadow_bit_mask = (1 << 3)
-    cloud_bit_mask = (1 << 4)
-    #water_mask = 2 #couldnt figure out but looks fine
-    cloud_mask = quality_band.bitwiseAnd(cloud_shadow_bit_mask).eq(0).And(quality_band.bitwiseAnd(cloud_bit_mask).eq(0))
-    #cloud_mask = quality_band.bitwiseAnd(cloud_shadow_bit_mask).lte(1).And(quality_band.bitwiseAnd(cloud_bit_mask).eq(0))
-    #water_masked = aerosol_band.bitwiseAnd(water_mask).eq(0)
-    cloudM = cloud_mask.select([0], ['cloudM'])
-    #waterM = water_mask.select([0], ['waterM'])
+    dilated_cloud = (1 << 1)
+    cloud_bit = (1 << 3)
+    cloud_shadow = (1 << 4)
+    water_bit = (1 << 7)
+    cloud_mask = (quality_band.bitwiseAnd(cloud_bit).eq(0)) \
+    .And(quality_band.bitwiseAnd(cloud_shadow).eq(0)) \
+    .And(quality_band.bitwiseAnd(dilated_cloud).eq(0))
 
-    # mask image with cloud mask and add as band
-    image_cloud_masked = img.updateMask(cloud_mask).addBands(cloudM)
-    #image_full_masked = image_cloud_masked.updateMask(water_mask).addBands(waterM).int16()
+    # select pixels flagged as water
+    water_mask = quality_band.bitwiseAnd(water_bit).neq(0)
+
+    # Convert to bands
+    cloudM = cloud_mask.select([0], ['cloudM'])
+    waterM = water_mask.select([0], ['waterM'])
+    image_cloud_masked = img.updateMask(cloud_mask).addBands([cloudM, waterM])
     return image_cloud_masked
-tcc_params = {'bands':['red_summer', 'green_summer', 'blue_summer'],
-               "min":-0.1, "max":.2, "gamma":.5}
+
 
 #%% Illumination condition
 # https://mygeoblog.com/2018/10/17/terrain-correction-in-gee/
@@ -279,17 +281,83 @@ def get_landsat_collection_sr(sensor):
         bands = ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'QA_PIXEL']
     else:  # for Landsat 5 and 7
         bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7', 'QA_PIXEL']
-    #sensor = 'LC08'
     band_names_landsat = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2', 'pixel_qa']
-    cloud_threshold = 100
+    cloud_threshold = 50
     collection_filtered_without_date = ee.ImageCollection('LANDSAT/' + sensor + '/C02/T1_L2') \
         .filterBounds(AK_landscape)\
         .filterMetadata('CLOUD_COVER', 'less_than', cloud_threshold) \
         .select(bands, band_names_landsat)  #rename bands
     return collection_filtered_without_date
+tcc_params = {'bands':['red', 'green', 'blue'],
+               "min":-0.1, "max":.1, "gamma":.3}
+#%% Fire data
+def process_mtbs(AK_landscape, year):
+
+    mtbs_boundaries = ee.FeatureCollection("USFS/GTAC/MTBS/burned_area_boundaries/v1")\
+                            .filterBounds(AK_landscape)
+    
+    def calculate_year_difference(feature):
+        ignition_date = ee.Date(feature.get('Ig_Date'))
+        year_difference = ee.Number(year).subtract(ignition_date.get('year'))
+        return feature.set('tsf', year_difference)
+    def find_overlaps(feature):
+        overlaps = mtbs_boundaries.filterBounds(feature.geometry())
+        return feature.set('total_fires', overlaps.size())
+
+    tsf = mtbs_boundaries.map(calculate_year_difference).select('tsf', 'Ig_Date', 'Event_ID')
+    overlapping_fires = mtbs_boundaries.map(find_overlaps)
+
+    filtered_tsf = tsf.filter(ee.Filter.gte('tsf', 0))
+    tsf_event_ids = filtered_tsf.aggregate_array('Event_ID')
+    filtered_overlaps = overlapping_fires.filter(ee.Filter.inList('Event_ID', tsf_event_ids))
+
+    # time since fire and number of fires
+    tsf_image = filtered_tsf.reduceToImage(properties=['tsf'], reducer=ee.Reducer.max()).rename('tsf')
+    tsf_image = tsf_image.unmask(-9999) 
+    overlap_image = filtered_overlaps.reduceToImage(properties=['total_fires'], reducer=ee.Reducer.sum()).rename('total_fires')
+    overlap_image = overlap_image.unmask(0)
+
+    # MTBS
+    mtbs_severity = ee.ImageCollection("USFS/GTAC/MTBS/annual_burn_severity_mosaics/v1")\
+                        .filterBounds(AK_landscape)\
+                        .filterDate('1984-01-01', ee.Date.fromYMD(year, 12, 31))
+
+    severity_image = mtbs_severity.mean().rename('severity')  
+    severity_image = severity_image.unmask(-9999)
+
+    # severity layers
+    severity_background = severity_image.lt(1).rename('severity_background')
+    severity_unburned = severity_image.gte(1).lt(2).rename('severity_unburned')
+    severity_low = severity_image.gte(2).lt(3).rename('severity_low')
+    severity_moderate = severity_image.gte(3).lt(4).rename('severity_moderate')
+    severity_high = severity_image.gte(4).lt(5).rename('severity_high')
+    severity_increased_greenness = severity_image.gte(5).lt(6).rename('severity_increased_greenness')
+    severity_non_mapping = severity_image.gte(6).rename('severity_non_mapping')
+
+    # combine into single image
+    severity_bands = ee.Image.cat([
+        severity_background,
+        severity_unburned,
+        severity_low,
+        severity_moderate,
+        severity_high,
+        severity_increased_greenness,
+        severity_non_mapping
+    ])
+
+    return {
+        'tsf_image': tsf_image,
+        'overlap_image': overlap_image,
+        'severity_bands': severity_bands
+    }
 # %% Iterate
+#cafiPlots = ee.FeatureCollection(f'projects/ee-vegshiftsalaska/assets/sample-data/locations')
+
 for i in range(year_info):
-    year = years.get(0).getInfo()
+    year = years.get(i).getInfo()
+
+    #mtbs for respective year
+    fire_layers = process_mtbs(AK_landscape, year)
 
     #seasonal windows
     startSeason1 = ee.Date.fromYMD(year, 3, 1)
@@ -307,14 +375,14 @@ for i in range(year_info):
             .filterDate(startSeason, endSeason)
             .map(scale_and_offset)
             .map(cloud_mask_landsat8)
-            .map(illuminationCondition)
-            .map(illumination_correction)
+            #.map(illuminationCondition)
+            #.map(illumination_correction)
             .map(add_indices))
         return cleaned_images
 
     # function to bring everything together            
     def make_ls(AK_landscape):
-        #tcc_bands = ee.List(['red', 'green', 'blue'])
+        tcc_bands = ee.List(['red', 'green', 'blue'])
         bands_indices = ee.List(['ndvi', 'evi', 'mndwi', 'nbr', 'vari', 'savi', 'tcb', 'tcg', 'tcw'])
         sensors = ['LC08', 'LC09', 'LE07', 'LT05']
         spring_images = ee.ImageCollection([])
@@ -327,20 +395,27 @@ for i in range(year_info):
             fall_images = fall_images.merge(get_landsat_Images(sensor, AK_landscape, startSeason3, endSeason3))
         
         # Median composites by season
-        #springtime = add_suffix(spring_images.median().select(bands), 'spring').unmask(-9999)
+        springtime = add_suffix(spring_images.median().select(bands_indices), 'spring')
         summertime = add_suffix(summer_images.median().select(bands_indices), 'summer')
-        #falltime = add_suffix(fall_images.median().select(bands), 'fall').unmask(-9999)
-        green_up = add_suffix(summer_images.median().subtract(spring_images.median()).select(bands_indices), 'up')
-        brown_down = add_suffix(fall_images.median().subtract(summer_images.median()).select(bands_indices), 'down')
+        falltime = add_suffix(fall_images.median().select(bands_indices), 'fall')
+        #green_up = add_suffix(summer_images.median().subtract(spring_images.median()).select(bands_indices), 'up')
+        #brown_down = add_suffix(fall_images.median().subtract(summer_images.median()).select(bands_indices), 'down')
 
         # add each composite as bands
-        return green_up.addBands(summertime).addBands(brown_down)
+        return springtime.addBands(summertime).addBands(falltime)
 
 
     #make composite
     #tcc_bands_sum = ee.List(['red_summer', 'green_summer', 'blue_summer'])
-    landsat_composite = make_ls(AK_landscape).clip(AK_landscape).reproject(crs='EPSG:3338', scale=30)
-    #Map.addLayer(landsat_composite, tcc_params, f'tcc {year}')
+    landsat_composite = make_ls(AK_landscape)\
+        .clip(AK_landscape)\
+        .reproject(crs='EPSG:3338', scale=30)
+    #info = landsat_composite.getInfo()
+    #Map.addLayer(landsat_composite, tcc_params, f'tcc {year} boreal 13')
+    landsat_fire = landsat_composite\
+        .addBands(fire_layers['tsf_image'])\
+        .addBands(fire_layers['overlap_image'])\
+        .addBands(fire_layers['severity_bands'])
     landsat_and_topo_layers = landsat_composite.addBands(topo_layers)\
         .reproject(crs='EPSG:3338', scale=30)\
         .clip(AK_landscape)
@@ -349,13 +424,13 @@ for i in range(year_info):
     geom = AK_landscape.geometry()
     task = ee.batch.Export.image.toDrive(
         image=landsat_composite,
-        description=f'tcc-{year}-MASKED-c90',
-        folder='Alaska_Proj',
+        description=f'dalton-50cc-{year}',
+        folder='Final_Composites',
         region=geom,
         scale=30,
         crs='EPSG:3338',
         maxPixels=1e13)
-    #task.start()
+    task.start()
 
     # Sampling process
     def get_pixel_values(f, img):
@@ -372,8 +447,51 @@ for i in range(year_info):
     pv_sampling = cafiPlots.map(lambda f: get_pixel_values(f, landsat_and_topo_layers))
     task_sampling = ee.batch.Export.table.toDrive(
        collection=pv_sampling,
-       description=f'pixel-vals-{year}',
-       folder='Alaska_Proj',
+       description=f'pixel-vals-3seas-{year}',
+       folder='Sampled_Alaska',
        fileFormat='CSV')
     task_sampling.start()
+
+    #clean up
+    landsat_composite = None
+    landsat_and_topo_layers = None
+    springtime = None
+    falltime = None
+    falltime = None
+
+# %% Export true color
+def export_median_true_color_composite(years):
+    start_month = 5
+    end_month = 8
+    sensors = ['LC08', 'LC09', 'LT05']
+  
+    merged = ee.ImageCollection([])
+    
+    for i in range(years.length().getInfo()):
+        year = years.get(i).getInfo()
+        start_date = ee.Date.fromYMD(year, start_month, 1)
+        end_date = ee.Date.fromYMD(year, end_month, 31)
+        
+        for sensor in sensors:
+            collection = get_landsat_collection_sr(sensor) \
+                .filterDate(start_date, end_date) \
+                .map(cloud_mask_landsat8) \
+                .map(scale_and_offset)
+
+            merged = merged.merge(collection)
+    
+    median_image = merged.median()
+
+    # Select RGB bands and rename
+    tcc = median_image.select(['red', 'green', 'blue'])
+    Map.addLayer(tcc, tcc_params, f"true AHH {years.get(0).getInfo()}-{years.get(-1).getInfo()}")
+
+# Use ee.List and iterate
+selected_years = ee.List.sequence(2000, 2024)
+years = selected_years
+export_median_true_color_composite(selected_years)
+
+Map.addLayer(AK_landscape, {}, 'boreal')
+
+
 # %%
