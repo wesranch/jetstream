@@ -17,7 +17,7 @@ pattern <- "pixel-vals-3seas"
 #files
 files <- list.files(file_dir, pattern = pattern , full.names = TRUE, recursive = TRUE)
 files_to_predict <- list.files(file_dir, pattern = "all-pixels-", full.names = TRUE, recursive = TRUE)
-raster_files <- list.files(out_dir, "dalton-clean", full.names = T, recursive = T)
+raster_files <- list.files(out_dir, "dalton-clean-", full.names = T, recursive = T)
 
 #rasters
 shp <- vect("/Users/wancher/Documents/thesis/data/landis/dalton_input/Dalton_Landscape.shp")
@@ -101,7 +101,7 @@ clean_df$y <- y
 
 
 ################################################################################
-response_variables <- c("black cottonwood", "resin birch", "black spruce",
+response_variables <- c("resin birch", "black spruce",
                         "white spruce", "quaking aspen")
 #response_variables <- c("Alaskan birch", "Black spruce",
 #                        "White spruce", "Trembling aspen")
@@ -125,7 +125,7 @@ spatial_models <- list()
 prediction_maps <- list()
 summary_dfs <- list()
 training_dataframes <- list()
-#response <- response_variables[[2]]
+#response <- response_variables[[3]]
 for (response in response_variables) {
   
   #filter df to species  
@@ -185,9 +185,19 @@ for (response in response_variables) {
   training_dataframes[[response]] <- train_df
   
   ##############################################################################
+  #library(ranger)
+  #library(SpatialML)
+  #geographic random forest package here:
+  formula <- as.formula(paste("Biogm2", "~", 
+                              paste(predictors, collapse = "+")))
+  grf_model <- grf(formula,
+                 dframe = train_df, kernel = "adaptive", bw = 50, coords = train_df[c("x","y")], 
+                 ntree = 500, forests = TRUE, geo.weighted = TRUE, print.results = TRUE)
+  
+  ##############################################################################
   # predictions
   prediction_maps_years <- list()
-  years <- seq(2000,2024)
+  years <- c(2000,2024)
   for (year in years){
     
     year_chr <- as.character(year)
@@ -197,7 +207,7 @@ for (response in response_variables) {
   
     
     predicted <- stats::predict(
-      object = model.non.spatial,
+      object = grf_model$Global.Model,
       data = df_predict,
       type = "response"
     )$predictions
