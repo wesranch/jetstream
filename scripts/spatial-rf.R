@@ -15,7 +15,7 @@ out_dir <- "/Users/wancher/Documents/thesis/data/output/"
 pattern <- "pixel-vals-3seas"
 
 #files
-files <- list.files(file_dir, pattern = pattern , full.names = TRUE, recursive = TRUE)
+files <- list.files(file_dir, pattern = pattern , full.names = TRUE, recursive = T)
 files_to_predict <- list.files(file_dir, pattern = "all-pixels-", full.names = TRUE, recursive = TRUE)
 raster_files <- list.files(out_dir, "dalton-clean-", full.names = T, recursive = T)
 
@@ -101,10 +101,10 @@ clean_df$y <- y
 
 
 ################################################################################
+# response_variables <- c("AKbirch", "BCotton",
+#                         "WhiteSpruce", "QAspen", "BlackSpruce")
 response_variables <- c("resin birch", "black spruce",
-                        "white spruce", "quaking aspen")
-#response_variables <- c("Alaskan birch", "Black spruce",
-#                        "White spruce", "Trembling aspen")
+                       "white spruce", "quaking aspen")
 training_df <- clean_df %>%
   #mutate(across(-Species, ~ na_if(.x, -9999))) %>%
   filter(Species %in% response_variables) %>%
@@ -140,9 +140,12 @@ for (response in response_variables) {
   prepped_recipe <- prep(tm_recipe, training = training_df_one_spp)
   data_corrRM <- bake(prepped_recipe, new_data = training_df_one_spp)
   
+  split <- initial_split(data_corrRM, prop = .7)
+  train <- training(split)
+  test  <- testing(split)
   
   #create clean training df
-  train_df <- data_corrRM %>% 
+  train_df <- train %>% 
     #append biomass column
     left_join(training_df_one_spp %>% select(Biogm2,x,y), 
               by = c("x", "y", "Biogm2"), relationship = "many-to-many")
