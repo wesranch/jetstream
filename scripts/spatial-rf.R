@@ -1,5 +1,5 @@
 #spatial rf
-
+#Wesley Rancher
 
 library(dplyr)
 library(spatialRF)
@@ -10,21 +10,27 @@ library(tidymodels)
 library(patchwork)
 
 ################################################################################
-file_dir <- "/Users/wancher/Downloads/"
+file_dir <- "/Users/wancher/Documents/thesis/data/output/"
 out_dir <- "/Users/wancher/Documents/thesis/data/output/"
 pattern <- "pixel-vals-3seas"
 
 #files
 files <- list.files(file_dir, pattern = pattern , full.names = TRUE, recursive = T)
-files_to_predict <- list.files(file_dir, pattern = "all-pixels-", full.names = TRUE, recursive = TRUE)
-raster_files <- list.files(out_dir, "dalton-clean-", full.names = T, recursive = T)
+climate_df <- read.csv(paste0(file_dir, "pixel-vals-hist-clim.csv"))
+permafrost_df <- read.csv(paste0(file_dir, "pixel-vals-perm.csv"))
+#files_to_predict <- list.files(file_dir, pattern = "all-pixels-", full.names = TRUE, recursive = TRUE)#predicting at plot xy only
+raster_files <- list.files(out_dir, "dalton-clean-", full.names = T, recursive = T) #map predictions
 
 #rasters
 shp <- vect("/Users/wancher/Documents/thesis/data/landis/dalton_input/Dalton_Landscape.shp")
 slope <- rast("/Users/wancher/Documents/thesis/data/output/dalton-slope.tif")
 elev <- rast("/Users/wancher/Documents/thesis/data/output/dalton-elev.tif")
 aspect <- rast("/Users/wancher/Documents/thesis/data/output/dalton-aspect.tif")
+perm_raster <- rast("/Users/wancher/Documents/thesis/data/climate-data/permafrost/mu_permafrost_0_100_2.img")
 
+
+###############################################################################
+#function for cleaning
 raster_to_df <- function(file){
   file_name <- basename(file)
   year <- sub('.*-(\\d{4})\\.tif', '\\1', file_name)
@@ -105,17 +111,16 @@ clean_df$y <- y
 #                         "WhiteSpruce", "QAspen", "BlackSpruce")
 response_variables <- c("resin birch", "black spruce",
                        "white spruce", "quaking aspen")
-training_df <- clean_df %>%
-  #mutate(across(-Species, ~ na_if(.x, -9999))) %>%
+#cbind climate because join operation is wonky
+clean_df_w_climate <- cbind(clean_df, climate_df)%>%select(-c(40,41))
+training_df <- clean_df_w_climate %>%
+  #mutate(across(-Species, ~ na_if(.x, -9999))) %>%#no 9999 vals
   filter(Species %in% response_variables) %>%
   rename(year=Year)%>%
-  #group_by(site, Biogm2, Species, across(c(1:33))) %>%
-  #summarise(total_plot_mass = sum(Biogm2, na.rm = TRUE), .groups = 'drop') %>%
-  #left_join(clim_perma, by = c("site","year"))%>%
-  
-  #convert to g C / m2
-  #mutate(ag_carbon = as.numeric(((total_plot_mass / 10000) / 10000) * 0.47)) %>%
-  select(-year, -PSP, -SPP_count, -.geo) %>%
+  mutate(ag_carbon = Biogm2 * 0.47)%>%
+  left_join(permafrost_df, by = c("PSP", "Species", "year"))%>%#pain in the neck
+  select(-year, -PSP, -SPP_count, -.geo, -Biogm2, -x.y, -y.y)%>%
+  rename(x = x.x, y = y.x)%>%
   drop_na()
 
 ################################################################################
@@ -125,7 +130,7 @@ spatial_models <- list()
 prediction_maps <- list()
 summary_dfs <- list()
 training_dataframes <- list()
-#response <- response_variables[[3]]
+response <- response_variables[[3]]
 for (response in response_variables) {
   
   #filter df to species  
@@ -134,22 +139,22 @@ for (response in response_variables) {
     select(-Species)
   
   # tidy models to rm correlated vars
-  tm_recipe <- recipe(Biogm2 ~ ., data = training_df_one_spp) %>%
+  tm_recipe <- recipe(ag_carbon ~ ., data = training_df_one_spp) %>%
     step_corr(all_numeric_predictors(), threshold = 0.80, 
               use = "pairwise.complete.obs", method = "pearson")
   prepped_recipe <- prep(tm_recipe, training = training_df_one_spp)
   data_corrRM <- bake(prepped_recipe, new_data = training_df_one_spp)
   
-  split <- initial_split(data_corrRM, prop = .7)
+  split <- initial_split(data_corrRM, prop = .8)
   train <- training(split)
   test  <- testing(split)
   
   #create clean training df
   train_df <- train %>% 
     #append biomass column
-    left_join(training_df_one_spp %>% select(Biogm2,x,y), 
-              by = c("x", "y", "Biogm2"), relationship = "many-to-many")
-  predictors <- setdiff(names(train_df), "Biogm2")
+    left_join(training_df_one_spp %>% select(ag_carbon,x,y), 
+              by = c("x", "y", "ag_carbon"), relationship = "many-to-many")
+  predictors <- setdiff(names(train_df), "ag_carbon")
   
   #create distance matrix
   distance.matrix <- as.matrix(dist(subset(train_df, select = -c(x, y))))
@@ -158,7 +163,7 @@ for (response in response_variables) {
   # non spatial random forest
   model.non.spatial <- spatialRF::rf(
     data = train_df,
-    dependent.variable.name = "Biogm2",
+    dependent.variable.name = "ag_carbon",
     predictor.variable.names = predictors,
     distance.matrix = distance.matrix,
     distance.thresholds = thresholds,
@@ -191,7 +196,7 @@ for (response in response_variables) {
   #library(ranger)
   #library(SpatialML)
   #geographic random forest package here:
-  formula <- as.formula(paste("Biogm2", "~", 
+  formula <- as.formula(paste("ag_carbon", "~", 
                               paste(predictors, collapse = "+")))
   grf_model <- grf(formula,
                  dframe = train_df, kernel = "adaptive", bw = 50, coords = train_df[c("x","y")], 
@@ -235,7 +240,7 @@ for (response in response_variables) {
     #          resolution = 30) 
     
     #pred_raster <- rasterize(m[, 1:2], empty_r, values = m[,3], background = NA)
-    #names(pred_raster) <- "Biogm2_Pred"
+    #names(pred_raster) <- "ag_carbon_Pred"
     #prediction_maps_years[[year_chr]] <- pred_raster
     #rm(predicted)
     #rm(pred_raster)
@@ -264,21 +269,23 @@ for (i in seq_along(prediction_maps)){
 }
 plotting_df <- do.call(rbind, summary_dfs)
 plotting_df$year <- as.numeric(plotting_df$year)
-ggplot(plotting_df, aes(y= PredAvg, x = year, color = Species, group = Species))+
+p <- ggplot(plotting_df, aes(y= PredAvg, x = year, color = Species, group = Species))+
   geom_line(linewidth = 2)+
-  geom_point(size = 3)+
+  #geom_smooth(linewidth = 1)+
+  #geom_point(size = 3, alpha = 0.5)+
   scale_color_paletteer_d("lisa::EdwardHopper")+
   #geom_smooth()+
   #facet_wrap(~Species, ncol = 1)+
   theme_minimal()+
+  theme(legend.position = "none")+
   scale_x_continuous(breaks = seq(2000, 2025, by = 5))+
-  scale_y_continuous(breaks = seq(0, 1000, by = .1), limits = c(0, 1000))
+  scale_y_continuous(breaks = seq(0, 700, by = 100), limits = c(0, 1000))
 
 ################################################################################
 #training df plot // do this on cleaned vars
 spatialRF::plot_training_df(
   data = train_df,
-  dependent.variable.name = "Biogm2",
+  dependent.variable.name = "ag_carbon",
   predictor.variable.names = predictors,
   ncol = 5,
   method = "lm",
