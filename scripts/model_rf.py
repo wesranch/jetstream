@@ -1,3 +1,4 @@
+#%% libraries
 import os
 import glob
 import pandas as pd
@@ -53,7 +54,7 @@ print(full_df.columns)
 
 #%% correlation
 def remove_correlated(df):
-    corr_matrix = X_train.corr()
+    corr_matrix = df.corr()
 
     #plot
     #sns.heatmap(df_corrRM, annot=False, cmap='coolwarm', fmt=".2f")
@@ -62,7 +63,7 @@ def remove_correlated(df):
     df_corrRM = corr_matrix[(corr_matrix < 0.70) & (corr_matrix > -0.70)]
     return df_corrRM
 
-#%% split
+#%% split, train, and fit
 def train_model(df, response):
     #filter to resonse
     df_filtered = df.loc[df['Species']==f'{response}']
@@ -77,21 +78,22 @@ def train_model(df, response):
     coords_test = X_test[['x', 'y']]
 
     #Create a PyGRF model by specifying hyperparameters
-    pygrf_example = PyGRF.PyGRFBuilder(n_estimators=500, max_features=1, band_width=39, train_weighted=True, predict_weighted=True, bootstrap=False,
+    pygrf = PyGRF.PyGRFBuilder(n_estimators=500, max_features=1, band_width=39, train_weighted=True, predict_weighted=True, bootstrap=False,
                             resampled=True, random_state=42)
 
     #Fit the created PyGRF model based on training data and their spatial coordinates
-    # xy_coord is the two-dimensional coordinates of training samples
     #X_train_corrRM = remove_correlated(X_train) #needs checked			  
-    pygrf_example.fit(X_train, y_train, xy_coords)
+    pygrf.fit(X_train, y_train, xy_coords)
 
     #Make predictions for testing data using the fitted PyGRF model
-    predict_combined, predict_global, predict_local = pygrf_example.predict(X_test, coords_test, local_weight=0.46)
+    predict_combined, predict_global, predict_local = pygrf.predict(X_test, coords_test, local_weight=0.46)
     
-    return pygrf_example, predict_combined, predict_global, predict_local
+    return pygrf, predict_combined, predict_global, predict_local
 
 # %% store the models
+# plan to update to store plots and model metrics
 response_variables = ['black spruce', 'white spruce', 'quaking aspen', 'resin birch']
 models = [train_model(full_df, response) for response in response_variables]
-
-# %%
+global_fi = models[1][0].global_model.feature_importances_#add in the function
+# %% predicting and storing
+# hyperparameterize and do cross folds
