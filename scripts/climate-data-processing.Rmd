@@ -23,20 +23,19 @@ library(dplyr)
 
 ```{r}
 # read in 2006-2015 rasters of climate data
-dir <- "/Users/wancher/Documents/thesis/data/climate-data"
-years <- paste(2015:2100, collapse = "|")
+dir <- "/Users/wancher/Documents/thesis/data/climate-data/tas_AK_771m_PRISM_1971_2000_historical"
+years <- paste(2006:2017, collapse = "|")
 list_of_climate_files <- list.files(dir,
                                     pattern = paste0(years, "\\.tif$"), 
                                     full.names = TRUE, 
                                     recursive = TRUE)
 
-permafrost_raster <- rast("data/mu_permafrost_0_100_2/mu_permafrost_0_100_2.img")
+permafrost_raster <- rast("/Users/wancher/Documents/thesis/data/climate-data/permafrost/mu_permafrost_0_100_2.img")
 
 #biomass data // storing the year
-dir2 <- "/Users/wancher/Documents/thesis/data/input"
+dir2 <- "/Users/wancher/Documents/thesis/data/biomass-input/"
 biomass_files <- list.files(dir2, pattern = "biomass_\\d{4}\\.csv$", full.names = TRUE)
-biomass_files <- list.files("biomass-data/", pattern = "biomass_\\d{4}\\.csv$", full.names = TRUE)
-biomass_files <- biomass_files[-c(1:6)]
+biomass_files <- biomass_files[-c(1:12)]
 biomass_dfs <- lapply(biomass_files, read.csv)
 ```
 
@@ -44,6 +43,10 @@ biomass_dfs <- lapply(biomass_files, read.csv)
 ```{r}
 #vectorize the dfs
 pts_each_year <- lapply(biomass_dfs, function(df) vect(df, geom = c("longitude", "latitude"), crs = "EPSG:4326"))
+
+#all locations for sampling historic normals
+pl <- read.csv("/Users/wancher/Documents/thesis/data/biomass-input/locations.csv")
+locations <- vect(pl, geom = c("x","y"),crs="EPSG:4326")
 
 #empty list for sampling values
 sampled_vals_all_yrs <- list()
@@ -53,7 +56,6 @@ sampled_vals_all_datasets <- list()
 Iterate over (takes about 3 minutes)
 
 ```{r}
-#straight from chat
 
 # Initialize lists to store results
 gfdl_tas <- list()
@@ -72,11 +74,11 @@ for (i in seq_along(list_of_climate_files)){
   # Extract metadata from the file name
   file_name <- basename(file)
   components <- strsplit(file_name, "_")[[1]]
-  climate_var <- components[1]  # "tas" or "prcp"
-  scenario <- components[5]    # "GFDL", "CCSM4", etc.
-  extension <- components[8]
+  climate_var <- components[2]  # "tas" or "prcp"
+  scenario <- components[3]    # "GFDL", "CCSM4", etc.
+  extension <- components[4]
   year <- sub("\\.tif$", "", extension) # "2005", "2006", etc.
-  month <- components[7]       # "01", "02", etc.
+  #month <- components[7]       # "01", "02", etc.
 
   # Read the raster data
   climate_raster <- rast(file)
@@ -104,62 +106,72 @@ full_list <- list(gfdl_tas, gfdl_prcp, ccsm4_tas, ccsm4_prcp)
 for (sublist in seq_along(full_list)){
   rasters_list <- full_list[[sublist]]
  
-  for (year in names(rasters_list)) {
-    # Stack all rasters for this year
-    stacked_rasters <- rast(c(rasters_list[year]))
-    
-    #check
-    if (ncell(stacked_rasters) == 0) {
-      warning(paste("No data found for year", year))
-      next  # skip year if no data
-    }
+  # for (year in names(rasters_list)) {
+  #   # Stack all rasters for this year
+  #   stacked_rasters <- rast(c(rasters_list[year]))
+  #   
+  #   #check
+  #   if (ncell(stacked_rasters) == 0) {
+  #     warning(paste("No data found for year", year))
+  #     next  # skip year if no data
+  #   }
     
     # Calculate the annual mean
     WGS <- "EPSG:4326"
-    annual_mean_raster <- app(stacked_rasters, fun = mean)
-    annual_mean_raster_reproj <- project(annual_mean_raster, WGS)
+    #annual_mean_raster <- app(stacked_rasters, fun = mean)
+    #annual_mean_raster_reproj <- project(annual_mean_raster, WGS)
     #permafrost raster
-    #permafrost_raster_reproj <- project(permafrost_raster, WGS)
+    permafrost_raster_reproj <- project(permafrost_raster, WGS)
     
     #patterns for file naming
-    file_name <- names(stacked_rasters[[1]])  # Take first raster for metadata
+    stacked_rasters <- rast(c(rasters_list))
+    file_name <- basename(sources(stacked_rasters[[sublist]]))  
     components <- strsplit(file_name, "_")[[1]]
-    climate_var <- components[1]  # "tas" or "prcp"
-    scenario <- components[5]    # "GFDL", "CCSM4", etc.
+    climate_var <- components[2]  # "tas" or "prcp"
+    scenario <- components[3]    # "GFDL", "CCSM4", etc.
     
     # sample at biomass plots for years 2006-2015
-    for (year in years) {
-      year_index <- match(year, years)
-      pts <- pts_each_year[[year_index]]
-
-      sampled_vals <- extract(permafrost_raster_reproj, pts)
+    for (pts in pts_each_year) {
+      #year_index <- match(year, years)
+      #pts <- pts_each_year[[pts]]
+      year <- as.character(pts$Year[[1]])
+      #plot(stacked_rasters[[year]], main = paste0(year))
+      #annual_mean_raster_reproj <- project(stacked_rasters[[year]], WGS)
+      sampled_vals <- extract(stacked_rasters[[year]], pts)
+      #sampled_vals <- extract(permafrost_raster, pts)
       sampled_vals$year <- year
-      sampled_vals$site <- pts$site #for later joining
+      sampled_vals$Species <- pts$Species
+      plotLocation <- crds(pts)
+      geom <- geom(pts)
+      sampled_vals$x <- geom[, "x"]
+      sampled_vals$y <- geom[, "y"]
+      names(sampled_vals)[names(sampled_vals) == year] <- paste0(climate_var, "_", scenario)
+      sampled_vals$PSP <- pts$PSP #for later joining
       sampled_vals <- sampled_vals[-c(1)]#rm ID column
 
       #append
       sampled_vals_all_yrs[[year]] <- sampled_vals
     }
     # #rbind
-    # sampled_vals_one_dataset <- do.call(rbind, sampled_vals_all_yrs)
+    sampled_vals_one_dataset <- do.call(rbind, sampled_vals_all_yrs)
     # names(sampled_vals_one_dataset)[names(sampled_vals_one_dataset) == "mean"] <- paste0(climate_var, "_", scenario)
 
     #names(sampled_vals_one_dataset)[names(sampled_vals_one_dataset) == "Layer_1"] <- paste0("dep2_permafrost")
 
     
     # save
-    output_directory <- "/Users/wancher/Documents/thesis/data/output"
-    output_file <- file.path(output_directory, paste0("annual_", climate_var, "_", 
-                                                scenario, "_", year, ".tif"))
-    names(annual_mean_raster_reproj) <- paste0(climate_var, "_", scenario, "_", year)
-    annual_rasters[[year]] <- annual_mean_raster_reproj
-    names(annual_rasters[[year]]) <- names(annual_mean_raster_reproj) 
+    output_directory <- "/Users/wancher/Documents/thesis/data/climate-data/Sampling/"
+    # output_file <- file.path(output_directory, paste0("annual_", climate_var, "_", 
+    #                                             scenario, "_", year, ".tif"))
+    # names(annual_mean_raster_reproj) <- paste0(climate_var, "_", scenario, "_", year)
+    # annual_rasters[[year]] <- annual_mean_raster_reproj
+    # names(annual_rasters[[year]]) <- names(annual_mean_raster_reproj) 
     #writeRaster(annual_mean_raster_reproj, output_file, format = "GTiff")
-  }
-  #sampled_vals_all_datasets[[sublist]] <- sampled_vals_one_dataset
+  
+  sampled_vals_all_datasets[[sublist]] <- sampled_vals_one_dataset
   #annual_raster_stack <- rast(annual_rasters)
   #names(annual_raster_stack) <- names(annual_rasters)
-  annual_rasters_all_datasets[[sublist]] <- annual_raster_stack
+  #annual_rasters_all_datasets[[sublist]] <- annual_raster_stack
 }
 annual_rasters_all_datasets <- lapply(annual_rasters_all_datasets, rast)
 raster_stack <- rast(annual_rasters_all_datasets[1:4])
@@ -168,8 +180,8 @@ raster_stack <- rast(annual_rasters_all_datasets[1:4])
 ```{r}
 # combine all yearly data.frames into one
 final_sampled_df <- do.call(cbind, sampled_vals_all_datasets)
-final_sampled_df <- final_sampled_df[-c(5,6,8,9,11,12)]
-final_sampled_df_full <- cbind(final_sampled_df, sampled_vals_one_dataset)
-final_sampled_df_full <- final_sampled_df_full[-c(8,9)]
-#write.csv(final_sampled_df_full, "data/output/pixel-vals-climate-perma.csv", row.names = FALSE)
+final_sampled_df <- final_sampled_df[-c(8:12,14:18,20:24)]
+#final_sampled_df_full <- cbind(final_sampled_df, sampled_vals_one_dataset)
+#final_sampled_df_full <- final_sampled_df_full[-c(8,9)]
+write.csv(final_sampled_df, "pixel-vals-climate.csv", row.names = FALSE)
 ```
