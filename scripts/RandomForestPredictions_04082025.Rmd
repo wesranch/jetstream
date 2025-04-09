@@ -30,10 +30,7 @@ library(dplyr)
 r_files_historic <- list.files(dir, pattern="mosaic-hist", full.names = TRUE, recursive = TRUE)
 r_files_intermediate <- list.files(dir, pattern="mosaic-ncar", full.names = TRUE, recursive = TRUE)
 r_files_extreme <- list.files(dir, pattern="mosaic-gfdl", full.names = TRUE, recursive = TRUE)
-for (r in seq_along(list_of_rasters)){
-  print(terra::sources(list_of_rasters[[r]]))
-  print(names(list_of_rasters[[r]]))
-}
+
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
 training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP)
