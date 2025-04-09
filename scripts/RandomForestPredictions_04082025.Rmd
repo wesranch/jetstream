@@ -1,0 +1,292 @@
+---
+title: "Random Forest Mapping"
+author: "Wesley Rancher"
+date: "2025-04-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# title: Random Forest Modeling
+# author: Wesley Rancher
+# date: "2025-1-22"
+
+setwd("F:/jetstream/")
+dir <- "F:/remoteSensing/data/output/"
+```
+
+Read in training dataset and rasters to make predictions on
+
+Landsat data MSS, TM, ETM+, OLI, TIIRS (4,5,7,8,9) (GEE)
+Topographic data: JAXA ALOS Global 30m (GEE)
+Permafrost: http://data.snap.uaf.edu/data/Base/Other/LandCarbon/Permafrost/
+Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
+Future Climate (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
+Scripts for that preprocessing are found in this folder
+
+```{r}
+library(dplyr)
+r_files_historic <- list.files(dir, pattern="mosaic-hist", full.names = TRUE, recursive = TRUE)
+r_files_intermediate <- list.files(dir, pattern="mosaic-ncar", full.names = TRUE, recursive = TRUE)
+r_files_extreme <- list.files(dir, pattern="mosaic-gfdl", full.names = TRUE, recursive = TRUE)
+for (r in seq_along(list_of_rasters)){
+  print(terra::sources(list_of_rasters[[r]]))
+  print(names(list_of_rasters[[r]]))
+}
+#Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
+#these are in the same order as the raster bands
+training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP)
+```
+
+Add lat/lon as bands to the rasters since they are used in model training. Here I generated systematic points within the landscape amounting to ~10% of the entire raster to make predictions for and do change detection. I also make predictions for the raster cells that correspond to actual plot locations to make comparisons of predictions at a plot and regional level.
+
+```{r}
+library(terra)
+
+#files
+ref <- rast(paste0(dir, "gee/mosaics/landisReg-FULLmosaic-hist-2015.tif"), lyr=33)#elevation
+bounds <- vect("F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp")
+fieldSites <- vect("F:/randomForest_Landis/input/shp/cafiPlotsCropped.shp")
+
+plot(bounds, main = "Field Site Locations")
+plot(fieldSites, add = TRUE, pch = 15, col = "purple")
+
+#sample the landscape (very small proportion of the landscape but should be geographically representative)
+regularPoints <- spatSample(ref, size=200000, method = "regular", as.points = TRUE, ext = bounds, na.rm=TRUE)
+#randomPoints <- spatSample(ref, size=180000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
+
+plot(bounds, main = "Regular Points for predictions")
+plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "deeppink2")#just plotting 1000
+#plot(bounds, main = "Random Points for predictions")
+#plot(sample(randomPoints, 1000), add = TRUE, pch = 15, col = adjustcolor("blue", alpha.f = 0.85))
+```
+
+```{r}
+#define function to add xy bands
+read_raster <- function (file) {
+  r <- rast(file)
+  
+  #remove bands that I managed to duplicate 
+  if (length(names(r))>41){
+    r <- r[, c(1:41)]
+  } else {
+    print("raster has expected number of bands before adding x and y")
+  }
+  r$dep2_permafrost <- as.integer(r$dep2_permafrost)#dbl to int
+  #filter to our systematic points scheme
+  r_vals <- terra::extract(r, regularPoints, xy = TRUE) %>% select(-ID)
+  return(r_vals)
+}
+```
+
+Define a function to perform predictions. Using gsub and string split to grab unique identifiers from file names so I can store them in a dataframe. This takes the final fit from the random forest model in the training fitting function later.
+
+```{r}
+predict_from_model <- function(file, fit, species){
+  
+  #naming conventions
+  spp <- tools::toTitleCase(species)
+  scenario <- strsplit(basename(file), "-")[[1]][3]
+  yr <- gsub(".*-(\\d+)\\.[a-zA-Z]+$", "\\1", basename(file))
+  raster <- read_raster(file)
+
+  #prediction
+  print(paste0("Processing ", scenario, " scenario ", "for ", spp, " ", "YEAR: ", yr))
+  
+  #2000000 pixels (I intentionally left this number lower for making predictions through time)
+  predicted <- predict(fit, na.omit(raster)) %>% 
+    summarise(AvgCarbon_gm2=mean(.pred, na.rm = TRUE),
+              SdCarbon_gm2=sd(.pred, na.rm = TRUE))
+  
+  predicted$ClimateScenario <- scenario
+  predicted$Species <- spp
+  predicted$Year <- yr
+  
+  rm(raster)
+  return(as.data.frame(predicted))
+}
+```
+
+Model training and Fitting Function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
+
+I additionally add in models for nearest neighbors, support vector machine, and conditional forest but have not dove into them in depth in terms of tuning.
+
+```{r}
+library(purrr)
+library(tidymodels)
+library(randomForest)
+library(kknn)
+library(kernlab)
+#library(partykit)
+
+species <- c("black spruce", "white spruce", "resin birch", "quaking aspen")
+
+train_model <- function(df, species, response="Carbon_gm2") {
+  print(paste0("running model for: ", species))
+  
+  #filter to one species
+  training_df_one_spp <- training_df %>% filter(Species == species)
+  predictors <- setdiff(names(training_df_one_spp), c("Species", "Carbon_gm2"))
+
+  #train and validation set (stratify the predictor dataset based on nature of the data measured in situ)
+  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.90, strata = all_of(response))
+  
+  #training and test set
+  train_data <- training(split_data)
+  test_data <- testing(split_data)
+  formula <- as.formula(paste(response, "~", paste(predictors, collapse = "+")))
+  
+  #tidy models recipe
+  recipe <- recipe(formula = formula, data = train_data) #%>% 
+    #step_nzv(all_predictors()) %>%
+    #step_corr(all_numeric_predictors(), threshold = 0.80, use = "pairwise.complete.obs", method = "pearson")
+  
+  #define models to run (nts: cite packages)
+  #use additional script to set up cforest to be tidymodels friendly
+  #source("scripts/define_cforest_model.R")
+  m_rf <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("randomForest")
+  m_ranger <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("ranger")
+  m_xgb <- boost_tree(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("xgboost")
+  m_kknn <- nearest_neighbor(neighbors=tune(), weight_func = tune(), dist_power = tune()) %>% set_mode("regression") %>% set_engine("kknn")
+  m_svm <- svm_rbf(cost= tune(), rbf_sigma = tune()) %>% set_mode("regression") %>% set_engine("kernlab")
+  #m_cforest <- cforest() %>% set_mode("regression") %>% set_engine("partykit")
+  models <- list(rf=m_rf,ranger=m_ranger,xgb=m_xgb)
+  
+  #params and grids
+  #top3_params <- parameters(mtry(), trees(), min_n())
+  # I think these two need recipes where the data is normalized
+  kknn_params <- parameters(neighbors(range = c(4, 25)), weight_func(values = c("rectangular", "triangular", "biweight", 
+                                                                                "triweight", "epanechnikov", "gaussian")),dist_power(range = c(1, 2)))  
+  svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
+    
+  #rf, ranger, and xgb use the same params
+  top3_grid <- expand.grid(mtry = seq(1, 20, 5), trees = seq(200,500,100), min_n = seq(2, 12, 3))
+  kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
+  svm_grid <- grid_regular(svm_params, levels = 10)
+  grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid, xgb_grid=top3_grid)
+  
+  #cross validation
+  print("performing cross validation across 10 folds")
+  pv_folds <- vfold_cv(train_data, v = 10, strata = all_of(response))
+
+  #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
+  #working outside of the map2 function to generate predictions
+  
+  # results <- map2(models, grids, function(model, grid) {
+    
+  tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(models[[1]]) %>% 
+    tune_grid(resamples = pv_folds, grid = grid[[1]], metrics = metric_set(rmse, rsq, mae))
+  
+  best_params <- select_best(tuned_results, metric="rmse")
+  wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(model), best_params)
+  
+  #fit across the resamples
+  fit <- fit_resamples(wflow, resamples = pv_folds, metrics = metric_set(rmse, rsq, mae))
+  mean_rmse <- collect_metrics(fit) %>% filter(.metric == "rmse") %>% pull(mean)
+  mean_rsq <- collect_metrics(fit) %>% filter(.metric == "rsq") %>% pull(mean)
+  
+  #print(paste0("MODEL: ", model$engine))
+  print(paste("Mean RMSE across folds: ", mean_rmse))
+  print(paste("Mean R² across folds: ", mean_rsq))
+  
+  final_fit <- fit(wflow, data=train_data)
+  #   return(list(fit=final_fit,RMSE=mean_rmse,RSQ=mean_rsq))
+  # })
+  
+  #generate predictions (using the regular RF model fit)
+  predictions_historic <- map(r_files_historic, function(file){
+    predict_from_model(file, results[[1]], species)})
+  predictions_intermediate <- map(r_files_intermediate, function(file){
+    predict_from_model(file, results[[1]], species)})
+  predictions_extreme <- map(r_files_extreme, function(file){
+    predict_from_model(file, results[[1]], species)})
+  
+  all_predictions <- list(predictions_historic, predictions_intermediate, predictions_extreme)
+  all_predictions_df <- bind_rows(all_predictions)
+  
+  
+  return(list(train_data=train_data, test_data=test_data, model_results=results, predictions=all_predictions_df))
+}
+
+#run the models
+models <- lapply(species, function(spp){train_model(training_df,species=spp)})
+```
+
+```{r}
+variable_importance <- function(response){
+  
+  pv_train <- training_dfs[[response]]
+  final_ranger_workflow <- rf_workflows[[response]]
+  final_fit <- fit(final_ranger_workflow, data = pv_train)
+  fitted_model <- extract_fit_parsnip(final_fit)$fit #fitted model
+  var_imp <- vip::vi(fitted_model) #%>% arrange(desc(Importance))
+  
+  imp_plot <- ggplot(var_imp, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_segment(aes(xend = Variable, y = 0, yend = Importance),
+                 color = "deepskyblue4", linewidth = 2) +
+    geom_point(size = 4,  color = "black") +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      title = paste0("Feature Importance ", response),
+      x = "Variable",
+      y = "Importance"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+      axis.title = element_text(size = 16, color = "black"),
+      axis.text = element_text(size = 16, color = "black"),
+      axis.title.y = element_text(size = 18, color = "black"),
+      axis.title.x = element_text(size = 18, color = "black"),
+    )
+
+  ggsave(paste0("writing/figures/vip-", response, ".jpeg"), 
+         plot = imp_plot, width = 9, height = 10)
+}
+
+################################################################################
+# generate predicted vs observed dfs
+plot_data <- data.frame()
+fits <- list()
+for (response in response_variables) {
+  pv_train <- training_dfs[[response]]
+  pv_test <- test_dfs[[response]]
+  final_ranger_workflow <- rf_workflows[[response]]
+  final_fit <- fit(final_ranger_workflow, data = pv_train)
+  fits[[response]] <- final_fit
+  predicted <- predict(final_fit, new_data = pv_test)
+  
+  #store metrics
+  observed <- pv_test$total_plot_mass
+  predicted_values <- predicted[[1]]
+  rmse_value <- rmse(observed, predicted_values)
+  r2_value <- cor(observed, predicted_values)^2
+  
+  plot_data <- bind_rows(plot_data, data.frame(
+    Observed = observed,
+    Predicted = predicted_values,
+    Response = response,
+    RMSE = rmse_value,
+    R2 = r2_value
+  ))
+}
+
+################################################################################
+# create predicted vs observed plot
+pvo_plot <- ggplot(plot_data, aes(x = Observed, y = Predicted, color = abs(Predicted-Observed))) + # nolint
+  geom_smooth(method = "lm", color = "black", linetype = "solid", se = FALSE)+
+  geom_point(size = 4, alpha = 0.75) +
+  #geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_color_viridis(option = "plasma", direction = 1)+
+  facet_wrap(~Response) +
+  theme_minimal() +
+  labs(x = "Observed", y = "Predicted") +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 14),
+        axis.title = element_text(size = 16)) +
+  geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted),
+                label = paste("r2:", round(R2, 2), "\nRMSE:", round(RMSE, 2))),
+            size = 10, hjust = 1, vjust = 0, color = "black")
+ggsave(paste0("writing/figures/rf-metrics-ccsm.jpeg"), plot = pvo_plot, width = 10, height = 10) #nolint
+```

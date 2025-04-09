@@ -4,11 +4,11 @@
 
 ################################################################################
 #install packages on jetstream
-install.packages("dplyr", lib = "~/R/Library")
-install.packages("tidymodels", lib = "~/R/Library")
-install.packages("randomForest", lib = "~/R/Library")
-install.packages("vip", lib = "~/R/Library")
-install.packages("ggplot2", lib = "~/R/Library")
+# install.packages("dplyr", lib = "~/R/Library")
+# install.packages("tidymodels", lib = "~/R/Library")
+# install.packages("randomForest", lib = "~/R/Library")
+# install.packages("vip", lib = "~/R/Library")
+# install.packages("ggplot2", lib = "~/R/Library")
 
 #load libraries
 library(dplyr)
@@ -31,6 +31,36 @@ library(viridis)
 ################################################################################
 # read in training data
 dir <- "/Users/wancher/Documents/thesis/"
+path = "F:/remoteSensing/data/output/csv/Sampled_Alaska/pixel-vals-fire*.csv"
+files = glob.glob(path)
+climate_df = pd.read_csv("F:/remoteSensing/data/output/csv/pixel-vals-hist-clim.csv")
+climate_df['pr'] = climate_df['hist_pr_1971_2000']
+climate_df['tas'] = climate_df['hist_tas_1971_2000']
+climate_df.drop(['hist_tas_1971_2000', 'hist_pr_1971_2000'], axis=1, inplace=True)
+permafrost_df = pd.read_csv("F:/remoteSensing/data/output/csv/pixel-vals-perm.csv")
+y_variable = 'Carbon_gm2'
+response_variables = ['black spruce', 'white spruce', 'quaking aspen', 'resin birch']
+
+#patterns
+mosaics_historic = "F:/remoteSensing/data/output/gee/mosaics/landisReg-FULLmosaic-hist-*.tif"
+mosaics_intermediate = "F:/remoteSensing/data/output/gee/mosaics/landisReg-FULLmosaic-ncar-*.tif"
+mosaics_extreme = "F:/remoteSensing/data/output/gee/mosaics/landisReg-FULLmosaic-gfdl-*.tif"
+output_dir = "F:/remoteSensing/data/output/raster/April_GRF_Predictions/"
+
+#reference raster
+raster_template = rast.open("F:/remoteSensing/data/output/gee/mosaics/landisReg-FULLmosaic-hist-2015.tif")
+bandnames = list(raster_template.descriptions)
+bandnames.append('x')
+bandnames.append('y')
+
+#shpfile
+bounds = gpd.read_file('F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp')
+
+#list files
+raster_files_historic = glob.glob(mosaics_historic)
+raster_files_intermediate = glob.glob(mosaics_intermediate)
+raster_files_extreme = glob.glob(mosaics_extreme)
+
 landsat_topo <- read.csv(paste0(dir, "data/output/pixel-vals-corrected-some.csv"))
 #landsat_topo <- read.csv(paste0(dir, "data/output/pixel-vals-indices-topo.csv"))
 clim_perma <- read.csv(paste0(dir, "data/output/pixel-vals-climate-perma.csv"))
@@ -40,6 +70,26 @@ clim_perma <- clim_perma[c(2,3,5,6,7)]#ccsm only
 # data cleaning
 response_variables <- c("Alaskan birch", "Black spruce",
                         "White spruce", "Trembling aspen")
+def clean_dataframe(file):
+  df = pd.read_csv(file)
+df[f'{y_variable}'] = df['Biogm2']*0.47#units of carbon
+df[['x','y']] = df['.geo'].str.extract(r'\[([-0-9.]+),([-0-9.]+)\]').astype(float)
+
+#turn time since fire categorical
+df['tsf_0_10'] = (df['tsf'] >= 0) & (df['tsf'] < 10)
+df['tsf_10_20'] = (df['tsf'] >= 10) & (df['tsf'] < 20)
+df['tsf_20_25'] = (df['tsf'] >= 20)
+
+df.drop(['system:index','Biogm2','SPP_count','.geo', 'severity_background',
+         'severity_non_mapping','severity_increased_greenness', 'tsf'], 
+        axis=1, inplace = True)
+
+df.dropna(inplace=True)
+print(df.shape[1])
+return df
+
+dfs = list(map(clean_dataframe,files))
+
 training_df <- landsat_topo %>%
   mutate(across(-common, ~ na_if(.x, -9999))) %>%
   filter(common %in% response_variables) %>%
@@ -65,7 +115,7 @@ test_dfs <- list()
 ################################################################################
 # train models for each species
 #response <- response_variables[[4]]
-for (response in response_variables) {
+train_model <- function(df, response) {
   print(paste0("running model for: ", response))
   #filter to one species
   training_df_one_spp <- training_df %>% filter(common == response)
