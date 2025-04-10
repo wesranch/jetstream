@@ -82,7 +82,7 @@ pfun <- function(object, new_data){
 predict_from_model <- function(file, fit, species){
   
   #naming conventions
-  spp <- tools::toTitleCase(species)
+  spp <- tools::toTitleCase(strsplit(species, " ")[[1]][1])%>%paste0(" ", strsplit(species, " ")[[1]][2])
   scenario <- strsplit(basename(file), "-")[[1]][3]
   yr <- gsub(".*-(\\d+)\\.[a-zA-Z]+$", "\\1", basename(file))
   raster <- read_raster(file)
