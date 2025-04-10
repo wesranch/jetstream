@@ -3,19 +3,191 @@ title: "Supplemental graphs"
 author: "Wesley Rancher"
 date: "2025-04-10"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 
 ```{r setup, include=FALSE}
+dir <- "F:/jetstream/data/"
+setwd(dir)
 library(dplyr)
 library(ggplot2)
 ```
 
+#PLOTTING CLIMATE DATA RS + LANDIS
+
 I obtained climate data from:
 
 Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
-Future Climate (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
+Future Climate Temperature (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
+
+
+#PLOTTING FIRE IN LANDIS AGAINST EMPIRICAL
+
+Here we can see the number of lightning ignited fires per year. Comparing landis output log files to data from Karen short:
+https://www.fs.usda.gov/rds/archive/Catalog/RDS-2013-0009.4/
+
+I downloaded the access DB
+
+Get the data from access DB
 
 ```{r}
+library(RODBC) 
 
+short_data <- odbcConnectAccess2007("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/Karen_Short_Data/FPA_FOD_20170508.accdb") 
+Fires <- sqlFetch(short_data, "Fires")
+Fires_AK <- Fires %>%
+  filter(STATE=="AK")%>% 
+  select(FPA_ID, FIRE_YEAR, DISCOVERY_DOY, STAT_CAUSE_DESCR,CONT_DATE, FIRE_SIZE, LATITUDE, LONGITUDE)
+
+l_fire_days_sort <- Fires_AK %>% filter(STAT_CAUSE_DESCR=="Lightning")
+h_fire_dat  <- Fires_AK %>% filter(!STAT_CAUSE_DESCR %in% c("Lightning","Missing/Undefined"))
+```
+
+```{r}
+library(RColorBrewer)
+library(pscl)
+
+red<-RColorBrewer::brewer.pal(9,'YlOrRd')
+#plot no of fires/yr
+l_fire_days_sort_count<- l_fire_days_sort%>%
+  dplyr::rename(J_DAY=DISCOVERY_DOY)%>%
+  group_by(FIRE_YEAR)%>%
+  dplyr::summarise(COUNT=n())
+
+colnames(l_fire_days_sort_count) <- c("YEAR", "COUNT")
+
+barplot(l_fire_days_sort_count$COUNT, main ="No of ign/yr Lightning Observed",col=red,names.arg=l_fire_days_sort_count$YEAR)
+```
+
+Human ignitions
+
+```{r}
+h_fire_days_sort <- h_fire_dat %>%
+  dplyr::rename(J_DAY = DISCOVERY_DOY) %>%
+  group_by(FIRE_YEAR) %>%
+  dplyr::summarise(COUNT = n())
+colnames(h_fire_days_sort) <- c("YEAR", "COUNT")
+barplot(h_fire_days_sort$COUNT, main ="No of ign/yr Human Accidental Observed",col=red,names.arg=h_fire_days_sort$YEAR)
+```
+
+
+Here we match them up with Fire weather index(FWI) data generated from the historic record of weather fed through LANDIS-II Fire weather to get the models calculation of FWI. See the Climate library documentation for assistance getting FWI.
+
+```{r}
+library(plyr)
+ign_types <- c("Lightning", "HumanAccidental")
+
+fire_days_list <- list(l_fire_days_sort, h_fire_dat) ##organizing all ignition types into a list
+
+
+##Import daily historic FWI data
+FWI_dat <- read.csv("F:/Rancher_Sims_Full_Landscape/interior_hist_ncar_3.18.2025/Climate-future-daily-input-log.csv")
+FWI_dat<-with(FWI_dat,aggregate(FireWeatherindex,by=list(Year=Year,Timestep=Day),FUN=mean))
+
+
+
+FWI_dat <- FWI_dat[,c(1,2,3)]
+colnames(FWI_dat)[3]<-"FWI"
+FWI_dat$ID <- paste(FWI_dat$Year+1999, "_", FWI_dat$Timestep, sep="") #creating date identifier out of date and julian day
+igns_list <- list()
+
+for (i in 1:length(ign_types[1:2])){#THIS DOESN'T INCLUDE RX BURNS BUT THATS CAUSE WE ARE PROVIDING THOSE TO SCRAPPLE DIRECT
+  ign_type_select <- fire_days_list[[i]] %>%dplyr::rename(YEAR=FIRE_YEAR, J_DAY=DISCOVERY_DOY)##selecting each ignition type individually
+  fire_days_count <- ddply(ign_type_select, .(ign_type_select$YEAR, ign_type_select$J_DAY), nrow) #finds duplicate rows in fire data
+  colnames(fire_days_count) <- c("YEAR", "JD", "No_FIRES") #Renaming columns for consistency
+  fire_days_count$ID <- paste(fire_days_count$YEAR, "_", fire_days_count$JD, sep="") #creating date identifier out of date and julian day
+
+  ##Merging dataframes by year and julian day
+  fire_days_short <- subset(fire_days_count, fire_days_count$YEAR < 2014) ##restricting fire records to climate file years
+  #FWI_short <- subset(FWI_dat, FWI_dat$Year > 1991) #restricting climate data to fire history records
+  merge_col <- FWI_dat$ID
+  FWI_fire_merge <- join(FWI_dat, fire_days_short, type="left") ##Merging based on unique date id
+  FWI_fire_number <- FWI_fire_merge[,c(1,3,7)] #pulling out FWI and number of fires
+  FWI_fire_number[is.na(FWI_fire_number)] <- 0 #converting NAs to 0, meaning 0 fires
+  plot(FWI_fire_number[,2], FWI_fire_number[,3], main =ign_types[i], xlab = "dailyFWI", ylab = "noFires") #plotting FWI against no of fires just to look at pattern
+  igns_list[[i]] <- FWI_fire_number 
+}
+```
+
+Summary
+
+```{r}
+summary(igns_list[[1]])
+Lightning<-as.data.frame(igns_list[[1]])
+POIS_mod_L <- glm(No_FIRES~FWI,data=Lightning, family="poisson")
+summary(POIS_mod_L)
+```
+
+## Plotting SCRPPLE Logs against empirical
+
+```{r}
+Simulated_Fire <- read.csv("F:/Rancher_Sims_Full_Landscape/interior_hist_ncar_3.18.2025/socialclimatefire-summary-log.csv")
+landis_fire_days<- Simulated_Fire %>%
+  dplyr::rename(YEAR = SimulationYear)%>%
+  mutate(YEAR=YEAR+1999)%>%
+  group_by(YEAR)%>%
+  select(YEAR, TotalBurnedSitesLightning)
+colnames(landis_fire_days)<-c("YEAR", "No_Fires")
+barplot(landis_fire_days$No_Fires, main ="No. of fires/yr LANDIS Simulated",col=red,names.arg=landis_fire_days$YEAR)
+barplot(l_fire_days_sort_count$COUNT, main ="No. of lightning ign/yr Empirical",col=red,names.arg=l_fire_days_sort_count$YEAR)
+
+landis_fire_days_filtered <- landis_fire_days[landis_fire_days$YEAR >= 2000 & landis_fire_days$YEAR <= 2014, ]
+l_fire_days_sort_count_filtered <- l_fire_days_sort_count[l_fire_days_sort_count$YEAR >= 2000 & l_fire_days_sort_count$YEAR <= 2014, ]
+
+# Merge the two datasets by the year
+combined_data_noFires <- merge(landis_fire_days_filtered, l_fire_days_sort_count_filtered, 
+                       by="YEAR",
+                       suffixes = c("_LANDIS", "_LIGHTNING"))
+
+#woah
+barplot(
+  height = rbind(combined_data_noFires$No_Fires, combined_data_noFires$COUNT), 
+  beside = TRUE,  
+  col = c("red", "blue"),  
+  names.arg = combined_data_noFires$YEAR,  
+  main = "Number of fires",
+  legend.text = c("LANDIS Simulated", "Lightning Empirical"),  
+  args.legend = list(x = "topright")
+)
+```
+
+## Simulated AAB against empirical 
+
+```{r}
+l_fire_aab <- l_fire_days_sort %>%
+  group_by(FIRE_YEAR) %>%
+  dplyr::summarise(COUNT = n(), AAB = sum(FIRE_SIZE/2.471, na.rm= TRUE))
+colnames(l_fire_aab) <- c("YEAR", "COUNT", "AAB")
+barplot(l_fire_aab$AAB, main ="Annual Area Burned Observed (Ha)",col=red,names.arg=l_fire_aab$YEAR)
+
+#landis
+landis_aab<- Simulated_Fire %>%
+  dplyr::rename(YEAR = SimulationYear)%>%
+  mutate(YEAR=YEAR+1999)%>%
+  group_by(YEAR)%>%
+  mutate(AAB = TotalBurnedSitesLightning*4)%>%
+  select(YEAR, AAB)
+barplot(landis_aab$AAB, main ="Annual Area Burned Simulated (Ha)",col=red,names.arg=landis_aab$YEAR)
+
+
+## filter and join
+landis_aab_filtered <- landis_aab[landis_aab$YEAR >= 2000 & landis_aab$YEAR <= 2014, ]
+l_fire_aab_filtered <- l_fire_aab[l_fire_aab$YEAR >= 2000 & l_fire_aab$YEAR <= 2014, ]
+
+# Merge the two datasets by the year
+combined_data_aab <- merge(landis_aab_filtered, l_fire_aab_filtered, 
+                       by = "YEAR", 
+                       suffixes = c("_LANDIS", "_LIGHTNING"))
+#shoot
+barplot(
+  height = rbind(combined_data_aab$AAB_LANDIS, combined_data_aab$AAB_LIGHTNING), 
+  beside = TRUE,  
+  col = c("red", "blue"),  
+  names.arg = combined_data_aab$YEAR,  
+  main = "Annual Area Burned (Ha)",
+  legend.text = c("LANDIS Simulated", "Lightning Empirical"),  
+  args.legend = list(x = "topright")
+)
 ```

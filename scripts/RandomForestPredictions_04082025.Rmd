@@ -32,6 +32,7 @@ r_files <- list.files(dir, pattern="FULLmosaic-", full.names = TRUE, recursive =
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
 training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP)
+#training_df <- read.csv("data/RandomForest_TrainingDATA_04102025_V2.csv") %>% select(-PSP)#one with Karen Short fire size added
 ```
 
 Add lat/lon as bands to the rasters since they are used in model training. Here I generated systematic points within the landscape amounting to ~10% of the entire raster to make predictions for and do change detection. I also make predictions for the raster cells that correspond to actual plot locations to make comparisons of predictions at a plot and regional level.
@@ -143,8 +144,8 @@ train_model <- function(df, species, response="Carbon_gm2") {
   test_data <- testing(split_data)
   formula <- as.formula(paste(response, "~", paste(predictors, collapse = "+")))
   
-  #tidy models recipe
-  recipe <- recipe(formula = formula, data = train_data) #%>% 
+  #tidy models recipe (swapping in entire dataset)
+  recipe <- recipe(formula = formula, data = training_df_one_spp) #%>% 
     #step_nzv(all_predictors()) %>%
     #step_corr(all_numeric_predictors(), threshold = 0.80, use = "pairwise.complete.obs", method = "pearson")
   
@@ -167,23 +168,16 @@ train_model <- function(df, species, response="Carbon_gm2") {
   svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
     
   #rf, ranger, and xgb use the same params
-  if (species == "black spruce"){
-    rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,25), min_n = seq(1, 12, 2))
-  } else if (species == "white spruce") {
-    rf_grid <- expand.grid(mtry = seq(5, 20, 3), trees = seq(200,1000,100), min_n = seq(1, 15, 3))
-  } else if (species == "resin birch"){
-    rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,25), min_n = seq(1, 12, 2))
-  } else 
-    rf_grid <- expand.grid(mtry = seq(5, 20, 3), trees = seq(200,1000,100), min_n = seq(1, 15, 3))
+  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,50), min_n = seq(1, 12, 3))
 
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
-  grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid)
+  grids <- list(rf_grid=rf_grid, ranger_grid=rf_grid)
   
   #cross validation
-  nfold <- 12
+  nfold <- 10
   print(paste0("performing cross validation across ", nfold, " folds"))
-  pv_folds <- vfold_cv(train_data, v = nfold, strata = all_of(response))
+  pv_folds <- vfold_cv(training_df_one_spp, v = nfold, strata = all_of(response))
 
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
   #working outside of the map2 function to generate predictions
@@ -191,7 +185,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #results <- map2(models, grids, function(model, grid) {
   #trying to leave this dynamic
   tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(m_rf) %>% 
-    tune_grid(resamples = pv_folds, grid = top3_grid, metrics = metric_set(rmse, rsq, mae))
+    tune_grid(resamples = pv_folds, grid = rf_grid, metrics = metric_set(rmse, rsq, mae))
   autoplot(tuned_results)
   best_params <- select_best(tuned_results, metric="rmse")
   wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(m_rf), best_params)
@@ -205,7 +199,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   print(paste("Mean RMSE across folds: ", mean_rmse))
   print(paste("Mean R² across folds: ", mean_rsq))
   
-  final_fit <- fit(wflow, train_data)
+  final_fit <- fit(wflow, training_df_one_spp)
   finalized_model <- extract_fit_parsnip(final_fit)
   
   # importance scores (permuation based)
@@ -215,22 +209,22 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #})
   
   #generate predictions (using the regular RF model fit)
-  all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
-  all_predictions_df <- bind_rows(all_predictions)
+  #all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
+  #all_predictions_df <- bind_rows(all_predictions)
   
   #generate validation data for plotting
   validation_fit <- fit(wflow, test_data)
   validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
     
   return(list(train_dfs=train_data, test_dfs=test_data, final_models=finalized_model, 
-              all_predictions=all_predictions_df, validation_data=validation_pred_df))
+              all_predictions=NULL, validation_data=validation_pred_df))
 }
 
 #run the models
 model_output <- lapply(species, function(spp){train_model(training_df,species=spp)})
 predictions <- do.call(rbind, lapply(model_output[1:4], function(x) x$all_predictions))
 validations <- do.call(rbind, lapply(model_output[1:4], function(x) x$validation_data))
-write.csv(predictions, "F:/jetstream/data/PredictedCarbon_RasterValues.csv", row.names = FALSE)
+#write.csv(predictions, "F:/jetstream/data/PredictedCarbon_RasterValues.csv", row.names = FALSE)
 ```
 
 Graph the predicted vs observed data for the validation fits.
@@ -258,38 +252,3 @@ plot(validation_plot)
 ```
 
 Graph carbon through time from the rasters we made predictions on.
-
-```{python}
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-predicted_data = pd.read_csv("data/PredictedCarbon_RasterValues.csv")
-
-predictions['Year'] = predictions['Year'].astype(int)
-
-# Set a style
-sns.set(style="whitegrid")
-
-# Get unique species for subplots
-species_list = predictions['Species'].unique()
-n_species = len(species_list)
-
-# Create subplots
-fig, axes = plt.subplots(n_species, 1, figsize=(10, 5 * n_species), sharex=True)
-
-if n_species == 1:
-    axes = [axes]  # Ensure axes is iterable
-
-# Plot for each species
-for ax, species in zip(axes, species_list):
-    data = predictions[predictions['Species'] == species]
-    sns.lineplot(data=data, x='Year', y='AvgCarbon_gm2', hue='ClimateScenario', ax=ax, marker='o')
-    ax.set_title(species)
-    ax.set_ylabel("AvgCarbon (g/m²)")
-    ax.legend(title='Climate Scenario')
-
-axes[-1].set_xlabel("Year")
-plt.tight_layout()
-plt.show()
-```
