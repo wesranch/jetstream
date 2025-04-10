@@ -113,7 +113,7 @@ make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
 }
 ```
 
-Model training and Fitting Function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
+Model training and fitting function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
 
 I additionally add in models for nearest neighbors, support vector machine, and conditional forest but do not fine tune them.
 
@@ -249,7 +249,7 @@ validation_plot <- ggplot(validations, aes(x = Observed, y = Predicted, color = 
 plot(validation_plot)
 ```
 
-Graph carbon through time from the rasters we made predictions on. I switch to python here for the aesthetics from matplotlib
+Graph carbon through time from the rasters we made predictions on.
 
 ```{python}
 import pandas as pd
