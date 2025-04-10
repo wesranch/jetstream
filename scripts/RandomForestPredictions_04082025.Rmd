@@ -136,7 +136,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   predictors <- setdiff(names(training_df_one_spp), c("Species", "Carbon_gm2"))
 
   #train and validation set (stratify the predictor dataset based on nature of the data measured in situ)
-  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.70, strata = all_of(response))
+  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.75, strata = all_of(response))
   
   #training and test set
   train_data <- training(split_data)
@@ -167,14 +167,15 @@ train_model <- function(df, species, response="Carbon_gm2") {
   svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
     
   #rf, ranger, and xgb use the same params
-  top3_grid <- expand.grid(mtry = seq(1, 20, 5), trees = seq(200,500,100), min_n = seq(2, 12, 3))
+  top3_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,50), min_n = seq(1, 12, 2))
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
   grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid)
   
   #cross validation
-  print("performing cross validation across 10 folds")
-  pv_folds <- vfold_cv(train_data, v = 10, strata = all_of(response))
+  nfold <- 10
+  print(paste0("performing cross validation across ", nfold, "folds"))
+  pv_folds <- vfold_cv(train_data, v = nfold, strata = all_of(response))
 
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
   #working outside of the map2 function to generate predictions
@@ -183,7 +184,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #trying to leave this dynamic
   tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(m_rf) %>% 
     tune_grid(resamples = pv_folds, grid = top3_grid, metrics = metric_set(rmse, rsq, mae))
-  
+  autoplot(tuned_results)
   best_params <- select_best(tuned_results, metric="rmse")
   wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(m_rf), best_params)
   
@@ -219,8 +220,8 @@ train_model <- function(df, species, response="Carbon_gm2") {
 
 #run the models
 model_output <- lapply(species, function(spp){train_model(training_df,species=spp)})
-#predictions <- models[[4]]
-#validations <- models[[5]]
+predictions <- do.call(rbind, lapply(model_output[1:4], function(x) x$all_predictions))
+validations <- do.call(rbind, lapply(model_output[1:4], function(x) x$validation_data))
 ```
 
 ```{r}
@@ -240,75 +241,5 @@ validation_plot <- ggplot(validations, aes(x = Observed, y = Predicted, color = 
   geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted), label = paste("r2:", round(RSQ, 2), "\nRMSE:", round(RMSE, 2))),
             size = 10, hjust = 1, vjust = 0, color = "black")
 
-
-
-variable_importance <- function(response){
-  
-  pv_train <- training_dfs[[response]]
-  final_ranger_workflow <- rf_workflows[[response]]
-  final_fit <- fit(final_ranger_workflow, data = pv_train)
-  fitted_model <- extract_fit_parsnip(final_fit)$fit #fitted model
-  var_imp <- vip::vi(fitted_model) #%>% arrange(desc(Importance))
-  
-  imp_plot <- ggplot(var_imp, aes(x = reorder(Variable, Importance), y = Importance)) +
-    geom_segment(aes(xend = Variable, y = 0, yend = Importance),
-                 color = "deepskyblue4", linewidth = 2) +
-    geom_point(size = 4,  color = "black") +
-    coord_flip() +
-    theme_minimal() +
-    labs( title = paste0("Feature Importance ", response), x = "Variable",y = "Importance") +
-    theme(plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
-          axis.title = element_text(size = 16, color = "black"),
-          axis.text = element_text(size = 16, color = "black"),
-          axis.title.y = element_text(size = 18, color = "black"),
-          axis.title.x = element_text(size = 18, color = "black"))
-
-  ggsave(paste0("writing/figures/vip-", response, ".jpeg"), 
-         plot = imp_plot, width = 9, height = 10)
-}
-
-################################################################################
-# generate predicted vs observed dfs
-plot_data <- data.frame()
-fits <- list()
-for (response in response_variables) {
-  pv_train <- training_dfs[[response]]
-  pv_test <- test_dfs[[response]]
-  final_ranger_workflow <- rf_workflows[[response]]
-  final_fit <- fit(final_ranger_workflow, data = pv_train)
-  fits[[response]] <- final_fit
-  predicted <- predict(final_fit, new_data = pv_test)
-  
-  #store metrics
-  observed <- pv_test$total_plot_mass
-  predicted_values <- predicted[[1]]
-  rmse_value <- rmse(observed, predicted_values)
-  r2_value <- cor(observed, predicted_values)^2
-  
-  plot_data <- bind_rows(plot_data, data.frame(
-    Observed = observed,
-    Predicted = predicted_values,
-    Response = response,
-    RMSE = rmse_value,
-    R2 = r2_value
-  ))
-}
-
-################################################################################
-# create predicted vs observed plot
-pvo_plot <- ggplot(plot_data, aes(x = Observed, y = Predicted, color = abs(Predicted-Observed))) + # nolint
-  geom_smooth(method = "lm", color = "black", linetype = "solid", se = FALSE)+
-  geom_point(size = 4, alpha = 0.75) +
-  #geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  scale_color_viridis(option = "plasma", direction = 1)+
-  facet_wrap(~Response) +
-  theme_minimal() +
-  labs(x = "Observed", y = "Predicted") +
-  theme(legend.position = "none",
-        strip.text = element_text(size = 14),
-        axis.title = element_text(size = 16)) +
-  geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted),
-                label = paste("r2:", round(R2, 2), "\nRMSE:", round(RMSE, 2))),
-            size = 10, hjust = 1, vjust = 0, color = "black")
-ggsave(paste0("writing/figures/rf-metrics-ccsm.jpeg"), plot = pvo_plot, width = 10, height = 10) #nolint
+plot(validation_plot)
 ```
