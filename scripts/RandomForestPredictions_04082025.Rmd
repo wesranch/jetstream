@@ -104,7 +104,7 @@ predict_from_model <- function(file, fit, species){
 }
 
 make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
-  spp <- tools::toTitleCase(species)
+  spp <- tools::toTitleCase(strsplit(species, " ")[[1]][1])%>%paste0(" ", strsplit(species, " ")[[1]][2])
   predicted <- predict(fit, test_data)
   observed <- test_data$Carbon_gm2
   vals <- predicted[[1]]
@@ -115,7 +115,7 @@ make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
 
 Model training and Fitting Function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
 
-I additionally add in models for nearest neighbors, support vector machine, and conditional forest but have not dove into them in depth in terms of tuning.
+I additionally add in models for nearest neighbors, support vector machine, and conditional forest but do not fine tune them.
 
 ```{r}
 library(purrr)
@@ -173,8 +173,8 @@ train_model <- function(df, species, response="Carbon_gm2") {
   grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid)
   
   #cross validation
-  nfold <- 10
-  print(paste0("performing cross validation across ", nfold, "folds"))
+  nfold <- 12
+  print(paste0("performing cross validation across ", nfold, " folds"))
   pv_folds <- vfold_cv(train_data, v = nfold, strata = all_of(response))
 
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
@@ -207,15 +207,15 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #})
   
   #generate predictions (using the regular RF model fit)
-  #all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
-  #all_predictions_df <- bind_rows(all_predictions)
+  all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
+  all_predictions_df <- bind_rows(all_predictions)
   
   #generate validation data for plotting
   validation_fit <- fit(wflow, test_data)
   validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
     
   return(list(train_dfs=train_data, test_dfs=test_data, final_models=finalized_model, 
-              all_predictions=NULL, validation_data=validation_pred_df))
+              all_predictions=all_predictions_df, validation_data=validation_pred_df))
 }
 
 #run the models
@@ -230,12 +230,14 @@ library(viridis)
 
 #plotting validation data vs predictions for each species with a 60/40 split
 validation_plot <- ggplot(validations, aes(x = Observed, y = Predicted, color = abs(Predicted-Observed))) +
-  geom_smooth(method = "lm", color = "black", linetype = "solid", se = FALSE)+
-  geom_point(size = 4, alpha = 0.75) +
-  #geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  scale_color_viridis(option = "mako", direction = 1)+
-  facet_wrap(~Species) +
-  theme_minimal() +
+  #geom_smooth(method = "lm", color = "black", linetype = "dashed", se = FALSE)+
+  geom_point(size = 5, alpha = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "solid") +
+  scale_color_viridis(option = "H", direction=-1)+
+  facet_grid(~ Species, nrow(1)) +
+  theme_classic() +
+  scale_x_continuous(limits=c(0,500))+
+  scale_y_continuous(limits=c(0,500))+
   labs(x = "Observed", y = "Predicted") +
   theme(legend.position = "none", strip.text = element_text(size = 14), axis.title = element_text(size = 16)) +
   geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted), label = paste("r2:", round(RSQ, 2), "\nRMSE:", round(RMSE, 2))),
