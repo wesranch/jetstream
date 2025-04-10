@@ -1,0 +1,21 @@
+---
+title: "Supplemental graphs"
+author: "Wesley Rancher"
+date: "2025-04-10"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+```
+
+I obtained climate data from:
+
+Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
+Future Climate (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
+
+```{r}
+
+```

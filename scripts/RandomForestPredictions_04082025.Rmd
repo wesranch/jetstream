@@ -167,7 +167,15 @@ train_model <- function(df, species, response="Carbon_gm2") {
   svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
     
   #rf, ranger, and xgb use the same params
-  top3_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,25), min_n = seq(1, 12, 2))
+  if (species == "black spruce"){
+    rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,25), min_n = seq(1, 12, 2))
+  } else if (species == "white spruce") {
+    rf_grid <- expand.grid(mtry = seq(5, 20, 3), trees = seq(200,1000,100), min_n = seq(1, 15, 3))
+  } else if (species == "resin birch"){
+    rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,25), min_n = seq(1, 12, 2))
+  } else 
+    rf_grid <- expand.grid(mtry = seq(5, 20, 3), trees = seq(200,1000,100), min_n = seq(1, 15, 3))
+
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
   grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid)
@@ -222,7 +230,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
 model_output <- lapply(species, function(spp){train_model(training_df,species=spp)})
 predictions <- do.call(rbind, lapply(model_output[1:4], function(x) x$all_predictions))
 validations <- do.call(rbind, lapply(model_output[1:4], function(x) x$validation_data))
-#write.csv(predictions, "data/PredictedCarbon_RasterValues.csv", row.names = FALSE)
+write.csv(predictions, "F:/jetstream/data/PredictedCarbon_RasterValues.csv", row.names = FALSE)
 ```
 
 Graph the predicted vs observed data for the validation fits.
@@ -254,12 +262,34 @@ Graph carbon through time from the rasters we made predictions on.
 ```{python}
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
-predicted_data = pd.read_csv(validations, "data/PredictedCarbon_RasterValues.csv", row.names = FALSE)
+predicted_data = pd.read_csv("data/PredictedCarbon_RasterValues.csv")
 
-fig, axes = plt.subplots(nrows=1, ncols=4, figsize=(6, 6))
-colors = plt.cm.cividis_r(indices['ClimateScenario'])
-fig.subtitle("Predicted carbon through time", fontsize=14, ha='center')
+predictions['Year'] = predictions['Year'].astype(int)
+
+# Set a style
+sns.set(style="whitegrid")
+
+# Get unique species for subplots
+species_list = predictions['Species'].unique()
+n_species = len(species_list)
+
+# Create subplots
+fig, axes = plt.subplots(n_species, 1, figsize=(10, 5 * n_species), sharex=True)
+
+if n_species == 1:
+    axes = [axes]  # Ensure axes is iterable
+
+# Plot for each species
+for ax, species in zip(axes, species_list):
+    data = predictions[predictions['Species'] == species]
+    sns.lineplot(data=data, x='Year', y='AvgCarbon_gm2', hue='ClimateScenario', ax=ax, marker='o')
+    ax.set_title(species)
+    ax.set_ylabel("AvgCarbon (g/m²)")
+    ax.legend(title='Climate Scenario')
+
+axes[-1].set_xlabel("Year")
 plt.tight_layout()
 plt.show()
 ```
