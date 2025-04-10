@@ -72,9 +72,13 @@ read_raster <- function (file) {
 }
 ```
 
-Define a function to perform predictions. Using gsub and string split to grab unique identifiers from file names so I can store them in a dataframe. This takes the final fit from the random forest model in the training fitting function later.
+Define some functions to make predictions and plot these estimates against our validation set. I'm using gsub and  strsplit to grab unique identifiers from file names so I can store them in a dataframe for later plotting. This requires a final fit from a model workflow. These functions are nested in the model training function.
 
 ```{r}
+pfun <- function(object, new_data){
+  predicted <- predict(object, new_data)$predictions
+}
+  
 predict_from_model <- function(file, fit, species){
   
   #naming conventions
@@ -98,6 +102,15 @@ predict_from_model <- function(file, fit, species){
   rm(raster)
   return(as.data.frame(predicted))
 }
+
+make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
+  spp <- tools::toTitleCase(species)
+  predicted <- predict(fit, test_data)
+  observed <- test_data$Carbon_gm2
+  vals <- predicted[[1]]
+  df <- rbind(data.frame(Observed=observed, Predicted=vals, Species=spp, RMSE=mean_rmse, RSQ=mean_rsq))
+  return(df)
+}
 ```
 
 Model training and Fitting Function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
@@ -111,6 +124,7 @@ library(randomForest)
 library(kknn)
 library(kernlab)
 #library(partykit)
+library(vip)
 
 species <- c("black spruce", "white spruce", "resin birch", "quaking aspen")
 
@@ -122,7 +136,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   predictors <- setdiff(names(training_df_one_spp), c("Species", "Carbon_gm2"))
 
   #train and validation set (stratify the predictor dataset based on nature of the data measured in situ)
-  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.90, strata = all_of(response))
+  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.70, strata = all_of(response))
   
   #training and test set
   train_data <- training(split_data)
@@ -182,23 +196,52 @@ train_model <- function(df, species, response="Carbon_gm2") {
   print(paste("Mean RMSE across folds: ", mean_rmse))
   print(paste("Mean R² across folds: ", mean_rsq))
   
-  final_fit <- fit(wflow, data=train_data)
+  final_fit <- fit(wflow, train_data)
+  finalized_model <- extract_fit_parsnip(final_fit)
+  
+  # importance scores (permuation based)
+  importance <- vi(finalized_model)
+  vip(importance, num_features = 15, geom = "point")
   #  return(final_fit)
   #})
   
   #generate predictions (using the regular RF model fit)
-  all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
-  all_predictions_df <- bind_rows(all_predictions)
+  #all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
+  #all_predictions_df <- bind_rows(all_predictions)
   
-  return(list(train_data=train_data, test_data=test_data, fits=final_fit, predictions=all_predictions_df))
+  #generate validation data for plotting
+  validation_fit <- fit(wflow, test_data)
+  validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
+    
+  return(list(train_dfs=train_data, test_dfs=test_data, final_models=finalized_model, 
+              all_predictions=NULL, validation_data=validation_pred_df))
 }
 
 #run the models
-models <- lapply(species, function(spp){train_model(training_df,species=spp)})
-predictions <- models[[4]] %>% bind_rows()
+model_output <- lapply(species, function(spp){train_model(training_df,species=spp)})
+#predictions <- models[[4]]
+#validations <- models[[5]]
 ```
 
 ```{r}
+library(ggplot2)
+library(viridis)
+
+#plotting validation data vs predictions for each species with a 60/40 split
+validation_plot <- ggplot(validations, aes(x = Observed, y = Predicted, color = abs(Predicted-Observed))) +
+  geom_smooth(method = "lm", color = "black", linetype = "solid", se = FALSE)+
+  geom_point(size = 4, alpha = 0.75) +
+  #geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  scale_color_viridis(option = "mako", direction = 1)+
+  facet_wrap(~Species) +
+  theme_minimal() +
+  labs(x = "Observed", y = "Predicted") +
+  theme(legend.position = "none", strip.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted), label = paste("r2:", round(RSQ, 2), "\nRMSE:", round(RMSE, 2))),
+            size = 10, hjust = 1, vjust = 0, color = "black")
+
+
+
 variable_importance <- function(response){
   
   pv_train <- training_dfs[[response]]
@@ -213,18 +256,12 @@ variable_importance <- function(response){
     geom_point(size = 4,  color = "black") +
     coord_flip() +
     theme_minimal() +
-    labs(
-      title = paste0("Feature Importance ", response),
-      x = "Variable",
-      y = "Importance"
-    ) +
-    theme(
-      plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
-      axis.title = element_text(size = 16, color = "black"),
-      axis.text = element_text(size = 16, color = "black"),
-      axis.title.y = element_text(size = 18, color = "black"),
-      axis.title.x = element_text(size = 18, color = "black"),
-    )
+    labs( title = paste0("Feature Importance ", response), x = "Variable",y = "Importance") +
+    theme(plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+          axis.title = element_text(size = 16, color = "black"),
+          axis.text = element_text(size = 16, color = "black"),
+          axis.title.y = element_text(size = 18, color = "black"),
+          axis.title.x = element_text(size = 18, color = "black"))
 
   ggsave(paste0("writing/figures/vip-", response, ".jpeg"), 
          plot = imp_plot, width = 9, height = 10)
