@@ -27,9 +27,7 @@ Scripts for that preprocessing are found in this folder
 
 ```{r}
 library(dplyr)
-r_files_historic <- list.files(dir, pattern="mosaic-hist", full.names = TRUE, recursive = TRUE)
-r_files_intermediate <- list.files(dir, pattern="mosaic-ncar", full.names = TRUE, recursive = TRUE)
-r_files_extreme <- list.files(dir, pattern="mosaic-gfdl", full.names = TRUE, recursive = TRUE)
+r_files <- list.files(dir, pattern="FULLmosaic-", full.names = TRUE, recursive = TRUE)
 
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
@@ -65,14 +63,11 @@ read_raster <- function (file) {
   r <- rast(file)
   
   #remove bands that I managed to duplicate 
-  if (length(names(r))>41){
-    r <- r[, c(1:41)]
-  } else {
-    print("raster has expected number of bands before adding x and y")
-  }
-  r$dep2_permafrost <- as.integer(r$dep2_permafrost)#dbl to int
+  if (nlyr(r) > 41) r <- terra::subset(r, 1:41)
+  
   #filter to our systematic points scheme
   r_vals <- terra::extract(r, regularPoints, xy = TRUE) %>% select(-ID)
+  r_vals$dep2_permafrost <- as.integer(r_vals$dep2_permafrost)#dbl to int
   return(r_vals)
 }
 ```
@@ -87,7 +82,7 @@ predict_from_model <- function(file, fit, species){
   scenario <- strsplit(basename(file), "-")[[1]][3]
   yr <- gsub(".*-(\\d+)\\.[a-zA-Z]+$", "\\1", basename(file))
   raster <- read_raster(file)
-
+  
   #prediction
   print(paste0("Processing ", scenario, " scenario ", "for ", spp, " ", "YEAR: ", yr))
   
@@ -148,7 +143,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   m_kknn <- nearest_neighbor(neighbors=tune(), weight_func = tune(), dist_power = tune()) %>% set_mode("regression") %>% set_engine("kknn")
   m_svm <- svm_rbf(cost= tune(), rbf_sigma = tune()) %>% set_mode("regression") %>% set_engine("kernlab")
   #m_cforest <- cforest() %>% set_mode("regression") %>% set_engine("partykit")
-  models <- list(rf=m_rf,ranger=m_ranger,xgb=m_xgb)
+  models <- list(rf=m_rf,ranger=m_ranger)
   
   #params and grids
   #top3_params <- parameters(mtry(), trees(), min_n())
@@ -161,7 +156,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   top3_grid <- expand.grid(mtry = seq(1, 20, 5), trees = seq(200,500,100), min_n = seq(2, 12, 3))
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
-  grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid, xgb_grid=top3_grid)
+  grids <- list(rf_grid=top3_grid, ranger_grid=top3_grid)
   
   #cross validation
   print("performing cross validation across 10 folds")
@@ -170,13 +165,13 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
   #working outside of the map2 function to generate predictions
   
-  # results <- map2(models, grids, function(model, grid) {
-    
-  tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(models[[1]]) %>% 
-    tune_grid(resamples = pv_folds, grid = grid[[1]], metrics = metric_set(rmse, rsq, mae))
+  #results <- map2(models, grids, function(model, grid) {
+  #trying to leave this dynamic
+  tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(m_rf) %>% 
+    tune_grid(resamples = pv_folds, grid = top3_grid, metrics = metric_set(rmse, rsq, mae))
   
   best_params <- select_best(tuned_results, metric="rmse")
-  wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(model), best_params)
+  wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(m_rf), best_params)
   
   #fit across the resamples
   fit <- fit_resamples(wflow, resamples = pv_folds, metrics = metric_set(rmse, rsq, mae))
@@ -188,26 +183,19 @@ train_model <- function(df, species, response="Carbon_gm2") {
   print(paste("Mean R² across folds: ", mean_rsq))
   
   final_fit <- fit(wflow, data=train_data)
-  #   return(list(fit=final_fit,RMSE=mean_rmse,RSQ=mean_rsq))
-  # })
+  #  return(final_fit)
+  #})
   
   #generate predictions (using the regular RF model fit)
-  predictions_historic <- map(r_files_historic, function(file){
-    predict_from_model(file, results[[1]], species)})
-  predictions_intermediate <- map(r_files_intermediate, function(file){
-    predict_from_model(file, results[[1]], species)})
-  predictions_extreme <- map(r_files_extreme, function(file){
-    predict_from_model(file, results[[1]], species)})
-  
-  all_predictions <- list(predictions_historic, predictions_intermediate, predictions_extreme)
+  all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
   all_predictions_df <- bind_rows(all_predictions)
   
-  
-  return(list(train_data=train_data, test_data=test_data, model_results=results, predictions=all_predictions_df))
+  return(list(train_data=train_data, test_data=test_data, fits=final_fit, predictions=all_predictions_df))
 }
 
 #run the models
 models <- lapply(species, function(spp){train_model(training_df,species=spp)})
+predictions <- models[[4]] %>% bind_rows()
 ```
 
 ```{r}
