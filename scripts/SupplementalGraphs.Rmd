@@ -1,5 +1,5 @@
 ---
-title: "Supplemental graphs"
+title: "Supplemental Figures"
 author: "Wesley Rancher"
 date: "2025-04-10"
 output: html_document
@@ -15,24 +15,38 @@ library(dplyr)
 library(ggplot2)
 ```
 
-#PLOTTING CLIMATE DATA RS + LANDIS
+# Plotting Landis Climate Data and Remote Sensing Climate Data
 
 I obtained climate data from:
 
 Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
 Future Climate Temperature (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
 
+```{r, Plotting Climate Data}
 
-#PLOTTING FIRE IN LANDIS AGAINST EMPIRICAL
+#plotting landis climate
+climateFuture <- read.csv("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/rep1_4.3.2025/interior_hist_ncar/Climate-future-monthly-input-log.csv")
+climateFuture_temp <- climateFuture %>%
+  select(Year, MinTemp, MaxTemp)%>%
+  group_by(Year)%>%
+  summarise(AvgTemp=(mean(MinTemp, na.rm = TRUE)+mean(MaxTemp, na.rm = TRUE) / 2),
+            StDev=(sd(MinTemp, na.rm = TRUE)+sd(MaxTemp, na.rm = TRUE) / 2))
+
+#plotting climate used in RS random forest
+
+```
+
+## Plotting Fire in LANDIS against Empirical (Directly from Zachary Robbin's tutorial swapped for AK data)
+
+citations: https://github.com/LANDIS-II-Foundation/Extension-Social-Climate-Fire/tree/master/Supporting%20R%20Code/Ignition_FWI
+
 
 Here we can see the number of lightning ignited fires per year. Comparing landis output log files to data from Karen short:
 https://www.fs.usda.gov/rds/archive/Catalog/RDS-2013-0009.4/
 
-I downloaded the access DB
+This all needs to be updated with results from newer sims
 
-Get the data from access DB
-
-```{r}
+```{r, Short Data}
 library(RODBC) 
 
 short_data <- odbcConnectAccess2007("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/Karen_Short_Data/FPA_FOD_20170508.accdb") 
@@ -45,7 +59,7 @@ l_fire_days_sort <- Fires_AK %>% filter(STAT_CAUSE_DESCR=="Lightning")
 h_fire_dat  <- Fires_AK %>% filter(!STAT_CAUSE_DESCR %in% c("Lightning","Missing/Undefined"))
 ```
 
-```{r}
+```{r, Empirical # Fires}
 library(RColorBrewer)
 library(pscl)
 
@@ -63,7 +77,7 @@ barplot(l_fire_days_sort_count$COUNT, main ="No of ign/yr Lightning Observed",co
 
 Human ignitions
 
-```{r}
+```{r Human or Accidental fires}
 h_fire_days_sort <- h_fire_dat %>%
   dplyr::rename(J_DAY = DISCOVERY_DOY) %>%
   group_by(FIRE_YEAR) %>%
@@ -72,10 +86,9 @@ colnames(h_fire_days_sort) <- c("YEAR", "COUNT")
 barplot(h_fire_days_sort$COUNT, main ="No of ign/yr Human Accidental Observed",col=red,names.arg=h_fire_days_sort$YEAR)
 ```
 
-
 Here we match them up with Fire weather index(FWI) data generated from the historic record of weather fed through LANDIS-II Fire weather to get the models calculation of FWI. See the Climate library documentation for assistance getting FWI.
 
-```{r}
+```{r FWI Relationship to Empirical}
 library(plyr)
 ign_types <- c("Lightning", "HumanAccidental")
 
@@ -113,16 +126,16 @@ for (i in 1:length(ign_types[1:2])){#THIS DOESN'T INCLUDE RX BURNS BUT THATS CAU
 
 Summary
 
-```{r}
+```{r Possion GLM}
 summary(igns_list[[1]])
 Lightning<-as.data.frame(igns_list[[1]])
 POIS_mod_L <- glm(No_FIRES~FWI,data=Lightning, family="poisson")
 summary(POIS_mod_L)
 ```
 
-## Plotting SCRPPLE Logs against empirical
+## Plotting social climate fire logs against empirical
 
-```{r}
+```{r social climate fire}
 Simulated_Fire <- read.csv("F:/Rancher_Sims_Full_Landscape/interior_hist_ncar_3.18.2025/socialclimatefire-summary-log.csv")
 landis_fire_days<- Simulated_Fire %>%
   dplyr::rename(YEAR = SimulationYear)%>%
@@ -191,3 +204,55 @@ barplot(
   args.legend = list(x = "topright")
 )
 ```
+
+# Probability of establishment with a new climate library (Historic sim)
+
+```{r}
+library(viridis)
+library(terra)
+Pest_graphing_matrix<-read.csv("F:/Rancher_Sims_Full_Landscape/interior_hist_ncar_3.18.2025/DGS-prob-establish-log.csv")%>%mutate(Year=Time+2014)
+Pest_graphing_matrix_someSPP <- Pest_graphing_matrix %>%
+  filter(!SpeciesName %in% c("TotalBiomass", "Turfmoss", "Sphagnum", 
+                         "Feathermoss", "ShrubBirch", "Willow", "Alder", "Tamarack", "BalsamPoplar"))
+
+
+climRegions_colors <- brewer.pal(10, "Paired")
+est_plt <- Pest_graphing_matrix_someSPP %>%
+  mutate(EcoRegion=as.factor(ClimateRegion))%>%
+  group_by(ClimateRegion)%>%
+ggplot(aes(x = Year, y = AvgProbEst, color = EcoRegion)) +
+  geom_line(linewidth = 1.5, alpha = 1) +
+  ylab("Probability of Establishment") +
+  scale_x_continuous(limits = c(2015, 2100), breaks = seq(2015, 2100, 20), expand = c(0, 0)) +
+  scale_color_manual(
+    values = climRegions_colors,
+    labels = function(x) paste0("eco ", x)
+  ) +
+  facet_wrap(~SpeciesName) +
+  guides(color = guide_legend(override.aes = list(shape = 16))) +
+  theme_bw() +
+  theme(
+    legend.position = "top",
+    legend.justification = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 14),
+    strip.text = element_text(size=8),
+    strip.placement = "top",
+    axis.title.y = element_text(size = 20, margin = margin(r = 20)),
+    axis.title.x = element_text(size = 18, margin = margin(r = 20), hjust=.47),
+    panel.spacing.y = unit(2, "lines"),
+    panel.grid.major = element_line(color = "gray80", size = 0.5),
+    panel.grid.minor = element_line(color = "gray90", size = 0.3),
+    axis.text.x = element_text(color = "black"),
+    axis.text.y = element_text(color = "black")
+  )
+est_plt
+
+bounds <- vect("F:/Rancher_Sims_Full_Landscape/input/FullLandscapeV3_082722.shp")
+ecoRaster <- rast("F:/Rancher_Sims_Full_Landscape/input/AK_ClimateMap_10_Regions.tif")
+ecoRaster <- project(ecoRaster, "EPSG:3338")
+ecoRaster <- mask(ecoRaster, bounds)
+plot(ecoRaster, col = c("black",climRegions_colors))
+```
+
+# Plotting community biomass against FIA

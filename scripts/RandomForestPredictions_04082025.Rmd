@@ -168,7 +168,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
     
   #rf, ranger, and xgb use the same params
-  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,500,50), min_n = seq(1, 12, 3))
+  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(300,1000,100), min_n = seq(1, 12, 3))
 
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
@@ -177,7 +177,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #cross validation
   nfold <- 10
   print(paste0("performing cross validation across ", nfold, " folds"))
-  pv_folds <- vfold_cv(training_df_one_spp, v = nfold, strata = all_of(response))
+  pv_folds <- vfold_cv(training_df_one_spp, repeats = 2, v = nfold, strata = all_of(response))
 
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
   #working outside of the map2 function to generate predictions
