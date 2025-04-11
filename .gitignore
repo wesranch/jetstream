@@ -6,3 +6,4 @@
 .scripts/SupplementalGraphs_files/
 *.html
 *.DS_Store
+.scripts/.ipynb_checkpoints/
