@@ -3,3 +3,6 @@
 .RData
 .Ruserdata
 .data/
+.scripts/SupplementalGraphs_files/
+*.html
+*.DS_Store
