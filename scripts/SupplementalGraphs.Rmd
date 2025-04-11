@@ -256,3 +256,5 @@ plot(ecoRaster, col = c("black",climRegions_colors))
 ```
 
 # Plotting community biomass against FIA
+
+

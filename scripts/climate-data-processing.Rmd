@@ -23,7 +23,7 @@ library(dplyr)
 
 ```{r}
 # read in 2006-2015 rasters of climate data
-dir <- "/Users/wancher/Documents/thesis/data/climate-data/tas_AK_771m_PRISM_1971_2000_historical"
+dir <- "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/ClimateData/"
 years <- paste(2006:2017, collapse = "|")
 list_of_climate_files <- list.files(dir,
                                     pattern = paste0(years, "\\.tif$"), 
