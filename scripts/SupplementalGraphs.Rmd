@@ -11,6 +11,7 @@ editor_options:
 ```{r setup, include=FALSE}
 dir <- "F:/jetstream/data/"
 setwd(dir)
+library(terra)
 library(dplyr)
 library(ggplot2)
 ```
@@ -23,11 +24,9 @@ Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/
 Future Climate Temperature (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
 
 ```{r, Plotting Climate Data, include=FALSE, eval=FALSE}
-library(terra)
-library(dplyr)
-
 climatedir <- "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/ClimateData/"
-#plotting landis climate
+
+#clean landis climate monthly log
 climateFuture <- read.csv("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/rep1_4.3.2025/interior_hist_ncar/DGS-succession-monthly-log.csv")
 climateFuture_temp <- climateFuture %>%
   select(Time, Ppt, Airtemp, ClimateRegionName)%>%
@@ -37,7 +36,6 @@ climateFuture_temp <- climateFuture %>%
             Temp_StDev=sd(Airtemp, na.rm = TRUE),
             PR_Avg=mean(Ppt,na.rm=TRUE),
             PR_StDev=sd(Ppt, na.rm = TRUE))
-
 
 
 #plotting climate used in RS random forest
@@ -70,13 +68,13 @@ get_average <- function(file){
   names(clipped) <- paste0(var, month)
   layer_name <-  paste0(var, month)
   df <- as.data.frame(clipped, xy=TRUE)
-  joined <- inner_join(df, randomPoints, by=c("x", "y"))
+  joined <- inner_join(df, randomPoints, by=c("x", "y"))%>%slice_sample(n=1000)
   joined$var <- layer_name
   colnames(joined)[3]<-var
   joined$Year <- yr
   joined$Month <- month
-  joined$ClimateScenario <- scenario
-  joined$RCP <- pway
+  joined$ClimateScenario <- paste0(scenario,pway)
+  
   print(paste0("processed: ", bname))
   return(joined)
 }
@@ -125,16 +123,20 @@ h_fire_dat  <- Fires_AK %>% filter(!STAT_CAUSE_DESCR %in% c("Lightning","Missing
 library(RColorBrewer)
 library(pscl)
 
-red<-RColorBrewer::brewer.pal(9,'YlOrRd')
 #plot no of fires/yr
 l_fire_days_sort_count<- l_fire_days_sort%>%
   dplyr::rename(J_DAY=DISCOVERY_DOY)%>%
   group_by(FIRE_YEAR)%>%
   dplyr::summarise(COUNT=n())
+#aesthetics
+reds <- colorRampPalette(brewer.pal(9, "Oranges"))(length(l_fire_days_sort_count$COUNT))
+sorted_counts <- sort(l_fire_days_sort_count$COUNT, decreasing = FALSE)
+color_map <- setNames(reds, sorted_counts)
+bar_colors <- color_map[as.character(l_fire_days_sort_count$COUNT)]
 
 colnames(l_fire_days_sort_count) <- c("YEAR", "COUNT")
 
-barplot(l_fire_days_sort_count$COUNT, main ="No of ign/yr Lightning Observed",col=red,names.arg=l_fire_days_sort_count$YEAR)
+barplot(l_fire_days_sort_count$COUNT, main ="No of ign/yr Lightning Observed",col=bar_colors,names.arg=l_fire_days_sort_count$YEAR)
 ```
 
 Human ignitions
@@ -145,7 +147,12 @@ h_fire_days_sort <- h_fire_dat %>%
   group_by(FIRE_YEAR) %>%
   dplyr::summarise(COUNT = n())
 colnames(h_fire_days_sort) <- c("YEAR", "COUNT")
-barplot(h_fire_days_sort$COUNT, main ="No of ign/yr Human Accidental Observed",col=red,names.arg=h_fire_days_sort$YEAR)
+
+sorted_counts <- sort(h_fire_days_sort$COUNT, decreasing = FALSE)
+color_map <- setNames(reds, sorted_counts)
+bar_colors <- color_map[as.character(h_fire_days_sort$COUNT)]
+
+barplot(h_fire_days_sort$COUNT, main ="No of ign/yr Human Accidental Observed",col=bar_colors,names.arg=h_fire_days_sort$YEAR)
 ```
 
 Here we match them up with Fire weather index(FWI) data generated from the historic record of weather fed through LANDIS-II Fire weather to get the models calculation of FWI. See the Climate library documentation for assistance getting FWI.
@@ -210,9 +217,14 @@ landis_fire_days<- Simulated_Fire %>%
   mutate(YEAR=YEAR+1999)%>%
   group_by(YEAR)%>%
   select(YEAR, TotalBurnedSitesLightning)
+
+sorted_counts <- sort(landis_fire_days$TotalBurnedSitesLightning, decreasing = FALSE)
+color_map <- setNames(reds, sorted_counts)
+bar_colors <- color_map[as.character(landis_fire_days$TotalBurnedSitesLightning)]
+
 colnames(landis_fire_days)<-c("YEAR", "No_Fires")
-barplot(landis_fire_days$No_Fires, main ="No. of fires/yr LANDIS Simulated",col=red,names.arg=landis_fire_days$YEAR)
-barplot(l_fire_days_sort_count$COUNT, main ="No. of lightning ign/yr Empirical",col=red,names.arg=l_fire_days_sort_count$YEAR)
+barplot(landis_fire_days$No_Fires, main ="No. of fires/yr LANDIS Simulated",col=bar_colors,names.arg=landis_fire_days$YEAR)
+barplot(l_fire_days_sort_count$COUNT, main ="No. of lightning ign/yr Empirical",col=bar_colors,names.arg=l_fire_days_sort_count$YEAR)
 
 landis_fire_days_filtered <- landis_fire_days[landis_fire_days$YEAR >= 2000 & landis_fire_days$YEAR <= 2014, ]
 l_fire_days_sort_count_filtered <- l_fire_days_sort_count[l_fire_days_sort_count$YEAR >= 2000 & l_fire_days_sort_count$YEAR <= 2014, ]
@@ -241,7 +253,7 @@ l_fire_aab <- l_fire_days_sort %>%
   group_by(FIRE_YEAR) %>%
   dplyr::summarise(COUNT = n(), AAB = sum(FIRE_SIZE/2.471, na.rm= TRUE))
 colnames(l_fire_aab) <- c("YEAR", "COUNT", "AAB")
-barplot(l_fire_aab$AAB, main ="Annual Area Burned Observed (Ha)",col=red,names.arg=l_fire_aab$YEAR)
+barplot(l_fire_aab$AAB, main ="Annual Area Burned Observed (Ha)",col=reds,names.arg=l_fire_aab$YEAR)
 
 #landis
 landis_aab<- Simulated_Fire %>%
@@ -250,7 +262,7 @@ landis_aab<- Simulated_Fire %>%
   group_by(YEAR)%>%
   mutate(AAB = TotalBurnedSitesLightning*4)%>%
   select(YEAR, AAB)
-barplot(landis_aab$AAB, main ="Annual Area Burned Simulated (Ha)",col=red,names.arg=landis_aab$YEAR)
+barplot(landis_aab$AAB, main ="Annual Area Burned Simulated (Ha)",col=reds,names.arg=landis_aab$YEAR)
 
 
 ## filter and join
@@ -289,9 +301,10 @@ est_plt <- Pest_graphing_matrix_someSPP %>%
   mutate(EcoRegion=as.factor(ClimateRegion))%>%
   group_by(ClimateRegion)%>%
 ggplot(aes(x = Year, y = AvgProbEst, color = EcoRegion)) +
-  geom_line(linewidth = 1.5, alpha = 1) +
+  #geom_smooth(se=FALSE)+
+  geom_line(linewidth = 1, alpha = 1) +
   ylab("Probability of Establishment") +
-  scale_x_continuous(limits = c(2015, 2100), breaks = seq(2015, 2100, 20), expand = c(0, 0)) +
+  scale_x_continuous(limits = c(2015, 2100), breaks = seq(2015, 2100, 25), expand = c(0, 0)) +
   scale_color_manual(
     values = climRegions_colors,
     labels = function(x) paste0("eco ", x)
@@ -307,7 +320,7 @@ ggplot(aes(x = Year, y = AvgProbEst, color = EcoRegion)) +
     strip.text = element_text(size=8),
     strip.placement = "top",
     axis.title.y = element_text(size = 20, margin = margin(r = 20)),
-    axis.title.x = element_text(size = 18, margin = margin(r = 20), hjust=.47),
+    axis.title.x = element_text(size = 18, margin = margin(r = 20), hjust=.47, vjust=-0.05),
     panel.spacing.y = unit(2, "lines"),
     panel.grid.major = element_line(color = "gray80", size = 0.5),
     panel.grid.minor = element_line(color = "gray90", size = 0.3),
