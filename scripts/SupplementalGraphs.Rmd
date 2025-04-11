@@ -22,17 +22,79 @@ I obtained climate data from:
 Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
 Future Climate Temperature (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
 
-```{r, Plotting Climate Data}
+```{r, Plotting Climate Data, include=FALSE, eval=FALSE}
+library(terra)
+library(dplyr)
 
+climatedir <- "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/ClimateData/"
 #plotting landis climate
-climateFuture <- read.csv("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/rep1_4.3.2025/interior_hist_ncar/Climate-future-monthly-input-log.csv")
+climateFuture <- read.csv("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/rep1_4.3.2025/interior_hist_ncar/DGS-succession-monthly-log.csv")
 climateFuture_temp <- climateFuture %>%
-  select(Year, MinTemp, MaxTemp)%>%
-  group_by(Year)%>%
-  summarise(AvgTemp=(mean(MinTemp, na.rm = TRUE)+mean(MaxTemp, na.rm = TRUE) / 2),
-            StDev=(sd(MinTemp, na.rm = TRUE)+sd(MaxTemp, na.rm = TRUE) / 2))
+  select(Time, Ppt, Airtemp, ClimateRegionName)%>%
+  mutate(Year=Time+2000)%>%
+  group_by(Year, ClimateRegionName)%>%
+  summarise(Temp_Avg=mean(Airtemp,na.rm=TRUE),
+            Temp_StDev=sd(Airtemp, na.rm = TRUE),
+            PR_Avg=mean(Ppt,na.rm=TRUE),
+            PR_StDev=sd(Ppt, na.rm = TRUE))
+
+
 
 #plotting climate used in RS random forest
+years <- seq(2006,2050)
+climate_files_snaps <- list.files(climatedir, pattern = paste0("^(tas.*(", paste(years, collapse = "|"), "))\\.tif$"),full.names = TRUE,recursive = TRUE)
+
+#plot by ecoregions
+bounds <- vect("F:/Rancher_Sims_Full_Landscape/input/FullLandscapeV3_082722.shp")
+ref <- rast("F:/Rancher_Sims_Full_Landscape/input/AK_ClimateMap_10_Regions.tif")
+ref_projected <- project(ref, "EPSG:3338")
+ref_clipped <- mask(ref_projected, bounds)
+randomPoints <- spatSample(ref_projected, size=2000000, xy=TRUE,method = "random", ext = bounds, na.rm=TRUE)
+
+
+get_average <- function(file){
+  r <- rast(file)
+  
+  bname <- basename(file)
+  var <- strsplit(bname, "_")[[1]][1]
+  scenario <- strsplit(bname, "_")[[1]][5]
+  pway <- strsplit(bname, "_")[[1]][6]
+  
+  yr <- gsub(".*_(\\d{4}).*", "\\1", bname)
+  month <- gsub(".*_(\\d{2})_.*", "\\1", bname)
+  #clip
+  #crs(r) <- crs(ref)
+  r_resampled <- project(r, ref_projected)
+  clipped <- mask(r_resampled, bounds)
+  #res(clipped) <- res(r)
+  names(clipped) <- paste0(var, month)
+  layer_name <-  paste0(var, month)
+  df <- as.data.frame(clipped, xy=TRUE)
+  joined <- inner_join(df, randomPoints, by=c("x", "y"))
+  joined$var <- layer_name
+  colnames(joined)[3]<-var
+  joined$Year <- yr
+  joined$Month <- month
+  joined$ClimateScenario <- scenario
+  joined$RCP <- pway
+  print(paste0("processed: ", bname))
+  return(joined)
+}
+
+temperature_dataframes_list <- lapply(climate_files_snaps, get_average)
+temperature_df <- bind_rows(temperature_dataframes_list)
+
+#seasonal line plot (faceted by season lines for )
+summary_projected_climate <- temperature_df%>%
+  rename(EcoRegions = AK_ClimateMap_10_Regions) %>%
+  mutate(Season = case_when(
+    Month %in% 3:5 ~ "Spring",
+    Month %in% 6:8 ~ "Summer",
+    Month %in% 9:11 ~ "Fall",
+    TRUE ~ NA_character_)) %>%
+  filter(!is.na(Season)) %>%
+  group_by(EcoRegions, Year, ClimateScenario, Season) %>%
+  summarise(MeanTemp = mean(Temp, na.rm = TRUE), .groups = "drop")
 
 ```
 
@@ -131,6 +193,12 @@ summary(igns_list[[1]])
 Lightning<-as.data.frame(igns_list[[1]])
 POIS_mod_L <- glm(No_FIRES~FWI,data=Lightning, family="poisson")
 summary(POIS_mod_L)
+
+summary(igns_list[[2]])
+Human<-as.data.frame(igns_list[[2]])
+POIS_mod_H <- glm(No_FIRES~FWI,data=Human, family="poisson")
+summary(POIS_mod_H)
+
 ```
 
 ## Plotting social climate fire logs against empirical
