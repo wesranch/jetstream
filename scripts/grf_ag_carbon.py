@@ -530,7 +530,7 @@ def predict_and_summarize(bw, best_params, lw, xtrain, ytrain, test_data, ytest,
     axes[1].set_ylabel("Features")
     #axes[1].set_title(f"Local Importance - {response}")
     axes[1].invert_yaxis()
-    fig.suptitle(f"RS Feature Importance - {response}", fontsize=16, ha='center')
+    fig.subtitle(f"RS Feature Importance - {response}", fontsize=16, ha='center')
     plt.tight_layout()
     plt.show()
     
