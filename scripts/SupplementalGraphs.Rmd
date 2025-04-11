@@ -84,16 +84,28 @@ temperature_df <- bind_rows(temperature_dataframes_list)
 
 #seasonal line plot (faceted by season lines for )
 summary_projected_climate <- temperature_df%>%
-  rename(EcoRegions = AK_ClimateMap_10_Regions) %>%
+  rename(EcoRegion = AK_ClimateMap_10_Regions) %>%
   mutate(Season = case_when(
     Month %in% 3:5 ~ "Spring",
     Month %in% 6:8 ~ "Summer",
     Month %in% 9:11 ~ "Fall",
-    TRUE ~ NA_character_)) %>%
+    TRUE ~ NA_character_),
+        EcoRegion = as.factor(EcoRegion),
+        Year = as.numeric(Year),
+        ClimateScenario = as.factor(ClimateScenario)) %>%
   filter(!is.na(Season)) %>%
-  group_by(EcoRegions, Year, ClimateScenario, Season) %>%
-  summarise(MeanTemp = mean(Temp, na.rm = TRUE), .groups = "drop")
+  group_by(EcoRegion, Year, ClimateScenario, Season) %>%
+  summarise(Temp_Avg = mean(tas, na.rm = TRUE), 
+            Temp_StdDev = sd(tas, na.rm = TRUE),
+            .groups = "drop")
 
+###
+summary_projected_climate %>%
+  ggplot(aes(x = Year, y = Temp_Avg, color = EcoRegion)) +
+  geom_line() +
+  facet_grid(Season ~ ClimateScenario) +
+  scale_color_brewer(palette = "Set3") +
+  theme_bw()
 ```
 
 ## Plotting Fire in LANDIS against Empirical (Directly from Zachary Robbin's tutorial swapped for AK data)

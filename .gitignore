@@ -7,3 +7,4 @@
 *.html
 *.DS_Store
 .scripts/.ipynb_checkpoints/
+*.csv
