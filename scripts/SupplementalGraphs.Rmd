@@ -86,9 +86,9 @@ temperature_df <- bind_rows(temperature_dataframes_list)
 summary_projected_climate <- temperature_df%>%
   rename(EcoRegion = AK_ClimateMap_10_Regions) %>%
   mutate(Season = case_when(
-    Month %in% 3:5 ~ "Spring",
-    Month %in% 6:8 ~ "Summer",
-    Month %in% 9:11 ~ "Fall",
+    as.numeric(Month) %in% 3:5 ~ "Spring",
+    as.numeric(Month) %in% 6:8 ~ "Summer",
+    as.numeric(Month) %in% 9:11 ~ "Fall",
     TRUE ~ NA_character_),
         EcoRegion = as.factor(EcoRegion),
         Year = as.numeric(Year),
@@ -102,7 +102,7 @@ summary_projected_climate <- temperature_df%>%
 ###
 summary_projected_climate %>%
   ggplot(aes(x = Year, y = Temp_Avg, color = EcoRegion)) +
-  geom_line() +
+  geom_line(linewidth=1) +
   facet_grid(Season ~ ClimateScenario) +
   scale_color_brewer(palette = "Set3") +
   theme_bw()
