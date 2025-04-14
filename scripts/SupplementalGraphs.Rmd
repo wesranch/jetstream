@@ -41,6 +41,7 @@ climateFuture_temp <- climateFuture %>%
 #plotting climate used in RS random forest
 years <- seq(2006,2050)
 climate_files_snaps <- list.files(climatedir, pattern = paste0("^(tas.*(", paste(years, collapse = "|"), "))\\.tif$"),full.names = TRUE,recursive = TRUE)
+climate_files_snaps <- climate_files_snaps[!grepl("decadal", climate_files_snaps)]
 
 #plot by ecoregions
 bounds <- vect("F:/Rancher_Sims_Full_Landscape/input/FullLandscapeV3_082722.shp")
