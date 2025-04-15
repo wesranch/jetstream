@@ -1,5 +1,5 @@
 ---
-title: "Random Forest Mapping"
+title: "Random Forest Future Climate"
 author: "Wesley Rancher"
 date: "2025-04-09"
 output: html_document
@@ -23,12 +23,11 @@ Scripts for that preprocessing are found in this folder
 
 ```{r}
 library(dplyr)
-r_files <- list.files(dir, pattern="-mosaic-", full.names = TRUE, recursive = TRUE)
+r_files <- list.files(dir, pattern="FULLmosaic-hist-", full.names = TRUE, recursive = TRUE)
 
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
-training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_")) #%>% select(-dep2_permafrost, -pr, -tas)
-#training_df <- read.csv("data/RandomForest_TrainingDATA_04102025_V2.csv") %>% select(-PSP)#one with Karen Short fire size added
+training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_"))
 ```
 
 Add lat/lon as bands to the rasters since they are used in model training. Here I generated systematic points within the landscape amounting to ~10% of the entire raster to make predictions for and do change detection. I also make predictions for the raster cells that correspond to actual plot locations to make comparisons of predictions at a plot and regional level.
@@ -45,16 +44,16 @@ plot(bounds, main = "Field Sites")
 plot(fieldSites, add = TRUE, pch = 15, col = "purple")
 
 #sample the landscape (very small proportion of the landscape but should be geographically representative)
-regularPoints <- spatSample(ref, size=200000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
+regularPoints <- spatSample(ref, size=200000, method = "regular", as.points = TRUE, ext = bounds, na.rm=TRUE)
 #randomPoints <- spatSample(ref, size=180000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
 
 plot(bounds, main = "Points to predict")
-plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "orange")#just plotting 1000
+plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "black")#just plotting 1000
 #plot(bounds, main = "Random Points for predictions")
 #plot(sample(randomPoints, 1000), add = TRUE, pch = 15, col = adjustcolor("blue", alpha.f = 0.85))
 ```
 
-This function is set up to read in a raster and remove layers that I duplicated by mistake. It then subsets 200000 pixels from the image using a regular sampling method. It is additionally set up to remove climate layers and retain only 30m layers for higher resolution maps.
+This function is set up to read in a raster and remove layers that I duplicated by mistake. It then subsets 200000 pixels from the image using a regular sampling method. It is additionally set up to remove climate layers and retain only 30m layers for higher resolution maps but that is currently commented out.
 
 ```{r}
 
@@ -99,10 +98,6 @@ Define some functions to make predictions and plot these estimates against our v
 
 ```{r}
 library(data.table)
-pfun <- function(object, new_data){
-  predicted <- predict(object, new_data)$predictions
-}
-  
 predict_from_model <- function(file, fit, species){
   
   #naming conventions
@@ -121,16 +116,24 @@ predict_from_model <- function(file, fit, species){
     #           SdCarbon_gm2=sd(.pred, na.rm = TRUE))
   
 
-
+  #join the predictions to the plot locations and convert to data table
   dt <- setDT(as.data.frame(regularPoints))[, AG_C_gm2 :=rep(predicted$.pred, length.out = nrow(regularPoints))]
-  #dt$AG_C_gm2 <- predicted
-  dt$ClimateScenario <- scenario
-  dt$Species <- spp
-  dt$Year <- yr
+  dt <- dt[, -c(1)]
   dt$x <- raster$x
   dt$y <- raster$y
-  rm(raster)
-  return(dt)
+  #add observed CAFI 
+  original_obs <- training_df %>% select(Carbon_gm2,x,y) %>% rename(AG_C_gm2=Carbon_gm2)
+  dt_full <- rbind(dt, original_obs)
+  
+  #add in additional info
+  dt_full$ClimateScenario <- scenario
+  dt_full$Species <- spp
+  dt_full$Year <- yr
+
+  
+  
+  rm(raster, dt)
+  return(dt_full)
 }
 
 make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
@@ -182,26 +185,10 @@ train_model <- function(df, species, response="Carbon_gm2") {
   #use additional script to set up cforest to be tidymodels friendly
   #source("scripts/define_cforest_model.R")
   m_rf <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("randomForest")
-  m_ranger <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("ranger")
-  m_xgb <- boost_tree(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("xgboost")
-  m_kknn <- nearest_neighbor(neighbors=tune(), weight_func = tune(), dist_power = tune()) %>% set_mode("regression") %>% set_engine("kknn")
-  m_svm <- svm_rbf(cost= tune(), rbf_sigma = tune()) %>% set_mode("regression") %>% set_engine("kernlab")
-  #m_cforest <- cforest() %>% set_mode("regression") %>% set_engine("partykit")
-  models <- list(rf=m_rf,ranger=m_ranger)
+
   
   #params and grids
-  #top3_params <- parameters(mtry(), trees(), min_n())
-  # I think these two need recipes where the data is normalized
-  kknn_params <- parameters(neighbors(range = c(4, 25)), weight_func(values = c("rectangular", "triangular", "biweight", 
-                                                                                "triweight", "epanechnikov", "gaussian")),dist_power(range = c(1, 2)))  
-  svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
-    
-  #rf, ranger, and xgb use the same params
   rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(200,500,100), min_n = seq(1, 12, 3))
-
-  kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
-  svm_grid <- grid_regular(svm_params, levels = 10)
-  grids <- list(rf_grid=rf_grid, ranger_grid=rf_grid)
   
   #cross validation
   nfold <- 5
@@ -209,10 +196,6 @@ train_model <- function(df, species, response="Carbon_gm2") {
   pv_folds <- vfold_cv(train_data, v = nfold, strata = all_of(response))
 
   #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
-  #working outside of the map2 function to generate predictions
-  
-  #results <- map2(models, grids, function(model, grid) {
-  #trying to leave this dynamic
   tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(m_rf) %>% 
     tune_grid(resamples = pv_folds, grid = rf_grid, metrics = metric_set(rmse, rsq, mae))
   autoplot(tuned_results)
@@ -243,8 +226,8 @@ train_model <- function(df, species, response="Carbon_gm2") {
   all_predictions_df <- bind_rows(all_predictions)
   
   #generate validation data for plotting
-  validation_fit <- fit(wflow, test_data)
-  validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
+  #validation_fit <- fit(wflow, test_data)
+  #validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
     
   return(list(train_dfs=train_data, test_dfs=test_data, final_models=finalized_model, 
               all_predictions=all_predictions_df, validation_data=validation_pred_df))
@@ -287,18 +270,24 @@ Graph carbon through time from the rasters we made predictions on.
 
 ```
 
-After looking at an initial carbon plot through time I decided to build a new dataset from the black spruce predictions. Interested to see if predictions will diverge if trained off of more data points and with an additional stream.
+After looking at an initial carbon plot through time I decided to build a new dataset from the black spruce predictions. Interested to see if predictions will diverge if trained off of more data points and with different climate sources to predict from.
 
 ```{r}
 years <- seq(2006, 2024)
+vars <- c("pr", "tas")
+scenarios <- c("CCSM4_rcp85", "GFDL-CM3_rcp85")
 dir <- "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/ClimateData/"
-climate_files <- list.files(dir, pattern = paste0("^(tas.*(", paste(years, collapse = "|"), "))\\.tif$"),full.names = TRUE,recursive = TRUE)#2006-2024
+pattern <- paste0("^(", paste(vars, collapse = "|"), ").*(", 
+                  paste(scenarios, collapse = "|"), ").*(", 
+                  paste(years, collapse = "|"), ")\\.tif$")
+
+climate_files <- list.files(dir, pattern = pattern, full.names = TRUE, recursive = TRUE)
 
 #grab predictions from one species
 predictions_Bspruce <- predictions %>% filter(ClimateScenario == "hist", Species == "Black spruce")
 
 # Read in the climate data
-join_climate_to_predictions <- function(file){
+subset_clim_data <- function(file){
   r <- rast(file)
   
   bname <- basename(file)
@@ -312,7 +301,7 @@ join_climate_to_predictions <- function(file){
   #crs(r) <- crs(ref)
   r_resampled <- project(r, ref)
   clipped <- mask(r_resampled, bounds)
-  res(clipped) <- res(r)
+  #res(clipped) <- res(r)
   names(clipped) <- paste0(var, month)
   layer_name <-  paste0(var, month)
   
@@ -323,22 +312,23 @@ join_climate_to_predictions <- function(file){
   regularPoints[[paste0(layer_name)]] <- r_vals
   smaller_r <- rasterize(regularPoints, clipped, field = layer_name)
   names(smaller_r) <- layer_name
-  writeRaster(smaller_r, filename = fname, overwrite = TRUE)
+  smaller_r$scenario <- paste0(scenario, pway)
+  smaller_r$x <- r_vals$x
+  smaller_r$y <- r_vals$y
   
-  #now we treat the predicted as our "observed"
-  joined_vals <- merge(r_vals, predictions_Bspruce, by = c("x","y"))%>%
-    select(-paste0(layer_name,".x"))%>%
-    rename(paste0(layer_name) == paste0(layer_name, ".y"))
-  
-  #join
-  r_vals$prediction <- predictions_Bspruce$prediction
-
-                       
-  return(joined_vals)
+  #writeRaster(smaller_r, filename = fname, overwrite = TRUE)
+  rm(r)
+  return(smaller_r)
 }
 
+#apply the function then merge the datasets
+processed_gfdl_pr <- lapply(climate_files[grepl("pr_total_mm_AR5_GFDL", climate_files)], subset_clim_data)
+processed_ccsm_pr <- lapply(climate_files[grepl("pr_total_mm_AR5_CCSM", climate_files)], subset_clim_data)
+processed_gfdl_tas <- lapply(climate_files[grepl("tas_mean_C_AK_AR5_GFDL", climate_files)], subset_clim_data)
+processed_ccsm_tas <- lapply(climate_files[grepl("tas_mean_C_AK_AR5_CCSM", climate_files)], subset_clim_data)
 
-joined_predictions_new_climate <- lapply(unique(climate_files), function(climate_files) {join_climate_to_predictions(file, final_fit, species)})
-
-
+gfdl_pr <- bind_rows(processed_gfdl_pr)
+ccsm_pr <- bind_rows(processed_ccsm_pr)
+gfdl_tas <- bind_rows(processed_gfdl_tas)
+ccsm_tas <- bind_rows(processed_ccsm_tas)
 ```
