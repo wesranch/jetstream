@@ -31,7 +31,7 @@ r_files <- list.files(dir, pattern="-mosaic-", full.names = TRUE, recursive = TR
 
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
-training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_")) %>% select(-dep2_permafrost, -pr, -tas)
+training_df <- read.csv("data/RandomForest_TrainingDATA_04082025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_")) #%>% select(-dep2_permafrost, -pr, -tas)
 #training_df <- read.csv("data/RandomForest_TrainingDATA_04102025_V2.csv") %>% select(-PSP)#one with Karen Short fire size added
 ```
 
@@ -45,15 +45,15 @@ ref <- rast(paste0(dir, "gee/mosaics/landisReg-FULLmosaic-hist-2015.tif"), lyr=3
 bounds <- vect("F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp")
 fieldSites <- vect("F:/randomForest_Landis/input/shp/cafiPlotsCropped.shp")
 
-plot(bounds, main = "Field Site Locations")
+plot(bounds, main = "Field Sites")
 plot(fieldSites, add = TRUE, pch = 15, col = "purple")
 
 #sample the landscape (very small proportion of the landscape but should be geographically representative)
-regularPoints <- spatSample(ref, size=200000, method = "regular", as.points = TRUE, ext = bounds, na.rm=TRUE)
+regularPoints <- spatSample(ref, size=200000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
 #randomPoints <- spatSample(ref, size=180000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
 
-plot(bounds, main = "Regular Points for predictions")
-plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "chartreuse4")#just plotting 1000
+plot(bounds, main = "Points to predict")
+plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "orange")#just plotting 1000
 #plot(bounds, main = "Random Points for predictions")
 #plot(sample(randomPoints, 1000), add = TRUE, pch = 15, col = adjustcolor("blue", alpha.f = 0.85))
 ```
@@ -67,35 +67,35 @@ read_raster <- function (file) {
   r <- rast(file)
   
   #remove bands that I managed to duplicate 
-  #if (nlyr(r) > 41) r <- terra::subset(r, 1:41)
+  if (nlyr(r) > 41) r <- terra::subset(r, 1:41)
   
   #filter to our systematic points scheme
   r_vals <- terra::extract(r, regularPoints, xy = TRUE) %>% select(-ID)
-  #r_vals$dep2_permafrost <- as.integer(r_vals$dep2_permafrost)#dbl to int
+  r_vals$dep2_permafrost <- as.integer(r_vals$dep2_permafrost)#dbl to int
   
   #entire image with no climate
-  chunks <- list()
-  total_rows <- nrow(r)
-  total_cols <- ncol(r)
-  chunk_n <- 30
-  rows_per_chunk <- ceiling(total_rows / chunk_n)
-  for (i in 1:chunk_n) {
-    start_row <- (i - 1) * rows_per_chunk + 1
-    end_row <- min(i * rows_per_chunk, total_rows)
-    chunk_raster <- crop(r, ext(0, total_cols, start_row, end_row))
-    vals <- as.data.frame(chunk_raster, xy=TRUE) ; gc()
-    clean_df <- vals %>% select(-starts_with(c("tsf", "severity")))
-    chunks[[i]] <- clean_df
-  }
+  # chunks <- list()
+  # total_rows <- nrow(r)
+  # total_cols <- ncol(r)
+  # chunk_n <- 30
+  # rows_per_chunk <- ceiling(total_rows / chunk_n)
+  # for (i in 1:chunk_n) {
+  #   start_row <- (i - 1) * rows_per_chunk + 1
+  #   end_row <- min(i * rows_per_chunk, total_rows)
+  #   chunk_raster <- crop(r, ext(0, total_cols, start_row, end_row))
+  #   vals <- as.data.frame(chunk_raster, xy=TRUE) ; gc()
+  #   clean_df <- vals %>% select(-starts_with(c("tsf", "severity")))
+  #   chunks[[i]] <- clean_df
+  # }
 
   
   #something going on with tsf variables (sub r_vals here for predicting through time)
-  #r_vals <- r_vals %>% select(-starts_with("tsf"))
+  r_vals <- r_vals %>% select(-starts_with("tsf"))
   # r_vals$tsf_0_10 <- as.character(as.logical(r_vals$tsf_0_10))
   # r_vals$tsf_10_20 <- as.character(as.logical(r_vals$tsf_10_20))
   # r_vals$tsf_20_25 <- as.character(as.logical(r_vals$tsf_20_25))
   # r_vals <- r_vals[complete.cases(r_vals), ]
-  return(chunks)
+  return(r_vals)
 }
 ```
 
