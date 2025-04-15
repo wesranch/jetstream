@@ -328,12 +328,14 @@ names(compare) <- c("FiresPerYr", "FiresPerYr_sd", "HAburnedPerYr", "HAburnedPer
 
 
 if ((fire.stat.hist$`AVG num of fires/yr` - fire.stat.hist$`SD num of fires/yr`)>=0) {
-  ymin=(fire.stat.hist$`AVG num of fires/yr` - fire.stat.hist$`SD num of fires/yr`)
-  } else {ymin=0}
-
+  ymin=(fire.stat.hist$`AVG num of fires/yr` - fire.stat.hist$`SD num of fires/yr`)} else {ymin=0}
+#ymin<-0
 compare_FiresPerYr <- ggplot(data=compare, aes(fill=Name, y=FiresPerYr, x=Name)) + 
   geom_bar(stat='identity', color="#e9ecef") +
-  geom_errorbar(aes(x=Name, y=FiresPerYr, ymin=ymin, ymax=FiresPerYr + FiresPerYr_sd), width=0.25, alpha=0.5, size=.8) +
+  geom_errorbar(aes(
+    ymin = pmax(FiresPerYr - FiresPerYr_sd, 0),
+    ymax = FiresPerYr + FiresPerYr_sd
+  ), width=0.25, alpha=0.5, size=.8)+
   ggtitle("Average # Fires / Year") +
   scale_fill_manual(values=c("#4575b4", "#b2182b")) +
   theme_bw() +
@@ -343,7 +345,10 @@ if ((fire.stat.hist$`AVG ha burned/yr` - fire.stat.hist$`SD ha burned/yr`)>=0) {
   ymin=(fire.stat.hist$`AVG ha burned/yr` - fire.stat.hist$`SD ha burned/yr`)} else {ymin=0}
 compare_HAburnedPerYr <- ggplot(data=compare, aes(fill=Name, y=HAburnedPerYr, x=Name)) + 
   geom_bar(stat='identity', color="#e9ecef") + 
-  geom_errorbar(aes(x=Name, y=HAburnedPerYr, ymin=ymin, ymax=HAburnedPerYr + HAburnedPerYr_sd), width=0.25, alpha=0.5, size=.8) +
+  geom_errorbar(aes(
+    ymin = pmax(HAburnedPerYr - HAburnedPerYr_sd, 0),
+    ymax = HAburnedPerYr + HAburnedPerYr_sd
+  ), width=0.25, alpha=0.5, size=.8) +
   ggtitle("Average Hectares Burned / Year") +
   scale_fill_manual(values=c("#4575b4", "#b2182b")) +
   theme_bw() +
@@ -360,7 +365,10 @@ if ((fire.stat.hist$`Mean ha/fire` - fire.stat.hist$`SD ha/fire`)>=0) {
   ymin=(fire.stat.hist$`Mean ha/fire` - fire.stat.hist$`SD ha/fire`)} else {ymin=0}
 compare_AvgHAPerFire <- ggplot(data=compare, aes(fill=Name, y=AvgHAPerFire, x=Name)) + 
   geom_bar(stat='identity', color="black") + 
-  geom_errorbar(aes(x=Name, y=AvgHAPerFire, ymin=ymin, ymax=AvgHAPerFire + SDHAPerFire), width=0.25, alpha=0.5, size=.8) +
+  geom_errorbar(aes(
+    ymin = pmax(AvgHAPerFire - SDHAPerFire, 0),
+    ymax = AvgHAPerFire + SDHAPerFire
+  ), width=0.25, alpha=0.5, size=.8) +
   ggtitle("Average Fire Size (Ha)") +
   scale_fill_manual(values=c("#4575b4", "#b2182b")) +
   theme_bw() +
@@ -370,7 +378,10 @@ if ((fire.stat.hist$`Fire Rotation` - fire.stat.hist$`SD Fire Rotation`)>=0) {
   ymin=(fire.stat.hist$`Fire Rotation` - fire.stat.hist$`SD Fire Rotation`)} else {ymin=0}
 compare_FireRotation <- ggplot(data=compare, aes(fill=Name, y=FireRotation, x=Name)) +
   geom_bar(stat='identity', color="#e9ecef") + 
-  geom_errorbar(aes(x=Name, y=FireRotation, ymin=ymin, ymax=FireRotation + FireRotationSD), width=0.25, alpha=0.5, size=.8) +
+  geom_errorbar(aes(
+    ymin = pmax(FireRotation - FireRotationSD, 0),
+    ymax = FireRotation + FireRotationSD
+  ), width=0.25, alpha=0.5, size=.8) +
   ggtitle("Fire Rotation") +
   scale_fill_manual(values=c("#4575b4", "#b2182b")) +
   theme_bw() +
@@ -394,6 +405,14 @@ compare_firesizedistr <- ggplot(compare_histogram_new, aes(x=Bins, fill=Name)) +
   ylab("Percentage of Fires") +
   theme_bw()
 
+#plot altogether                                
+((compare_FiresPerYr|compare_HAburnedPerYr)/
+  (compare_MaxHABurned|compare_AvgHAPerFire)/
+  (compare_FireRotation|compare_firesizedistr)) #/
+  #compare_severitydistr
+
+
+#write.csv(compare, "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/TestRuns/EmpiricalPlusSimulated.csv", row.names = FALSE)
 ```
 
 Fire severity
