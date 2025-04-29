@@ -1,0 +1,437 @@
+---
+title: "Random Forest Mapping"
+author: "Wesley Rancher"
+date: "2025-04-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+setwd("F:/jetstream/")
+dir <- "F:/remoteSensing/data/output/"
+```
+
+Read in training dataset and rasters to make predictions on
+
+Landsat data MSS, TM, ETM+, OLI, TIIRS (4,5,7,8,9) (GEE)
+Topographic data: JAXA ALOS Global 30m (GEE)
+Permafrost: http://data.snap.uaf.edu/data/Base/Other/LandCarbon/Permafrost/
+Historic Climate (PRISM): http://data.snap.uaf.edu/data/Base/AK_771m/historical/PRISM/
+Future Climate (CCSM and GFDL): http://data.snap.uaf.edu/data/Base/AK_771m/projected/AR5_CMIP5_models/Projected_Monthly_and_Derived_Temperature_Products_771m_CMIP5_AR5/monthly/
+Scripts for that preprocessing are found in this folder
+
+```{r}
+library(dplyr)
+#r_files <- list.files(dir, pattern="mosaic-hist", full.names = TRUE, recursive = TRUE)
+
+#Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
+#these are in the same order as the raster bands
+training_df <- read.csv("data/analysis/RandomForest_TrainingDATA_04242025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_")) #%>% select(-dep2_permafrost, -pr, -tas)
+#training_df <- read.csv("data/RandomForest_TrainingDATA_04102025_V2.csv") %>% select(-PSP)#one with Karen Short fire size added
+```
+
+Add lat/lon as bands to the rasters since they are used in model training. Here I generated systematic points within the landscape amounting to ~10% of the entire raster to make predictions for and do change detection. I also make predictions for the raster cells that correspond to actual plot locations to make comparisons of predictions at a plot and regional level.
+
+```{r}
+library(terra)
+
+#files
+ref <- rast(paste0(dir, "gee/mosaics/landisReg-FULLmosaic-hist-2015.tif"), lyr=33)#elevation
+bounds <- vect("F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp")
+fieldSites <- vect("F:/randomForest_Landis/input/shp/cafiPlotsCropped.shp")
+
+#ecoregions for zonal stats
+ref_eco <- rast("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/Cleaned_Inputs/AK_ClimateMap_10_Regions.tif")
+bounds <- vect("F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp")
+crs(ref_eco) <- "EPSG:3338"
+ref_eco_masked <- mask(ref_eco, bounds)
+
+
+plot(bounds, main = "Field Sites")
+plot(fieldSites, add = TRUE, pch = 15, col = "purple")
+
+#sample the landscape (very small proportion of the landscape but should be geographically representative)
+ref <- resample(ref, ref_eco_masked, method="average")#resample to 200m
+regularPoints <- spatSample(ref, size=2000000, method = "regular", as.points = TRUE, ext = bounds, na.rm=TRUE)
+#ref_eco_pts <- terra::extract(ref_eco_masked, regularPoints, xy = TRUE)
+#randomPoints <- spatSample(ref, size=180000, method = "random", as.points = TRUE, ext = bounds, na.rm=TRUE)
+
+plot(bounds, main = "Points to predict")
+plot(sample(regularPoints, 1000), add = TRUE, pch = 15, col = "blue")#just plotting 1000
+#plot(bounds, main = "Random Points for predictions")
+#plot(sample(randomPoints, 1000), add = TRUE, pch = 15, col = adjustcolor("blue", alpha.f = 0.85))
+```
+
+This function is set up to read in a raster and remove layers that I duplicated by mistake. It then subsets 200000 pixels from the image using a regular sampling method. It is additionally set up to remove climate layers and retain only 30m layers for higher resolution maps.
+
+```{r}
+
+
+#define function to add xy bands
+read_raster <- function (file) {
+  r <- rast(file)
+  
+  #remove bands that I managed to duplicate 
+  if (nlyr(r) > 41) r <- terra::subset(r, 1:41)
+  
+  #filter to our systematic points scheme
+  r_vals <- terra::extract(r, regularPoints, xy = TRUE) %>% select(-ID)
+  r_vals$dep2_permafrost <- as.integer(r_vals$dep2_permafrost)#dbl to int
+  
+  #entire image with no climate
+  # chunks <- list()
+  # total_rows <- nrow(r)
+  # total_cols <- ncol(r)
+  # chunk_n <- 30
+  # rows_per_chunk <- ceiling(total_rows / chunk_n)
+  # for (i in 1:chunk_n) {
+  #   start_row <- (i - 1) * rows_per_chunk + 1
+  #   end_row <- min(i * rows_per_chunk, total_rows)
+  #   chunk_raster <- crop(r, ext(0, total_cols, start_row, end_row))
+  #   vals <- as.data.frame(chunk_raster, xy=TRUE) ; gc()
+  #   clean_df <- vals %>% select(-starts_with(c("tsf", "severity")))
+  #   chunks[[i]] <- clean_df
+  # }
+
+  
+  #something going on with tsf variables (sub r_vals here for predicting through time)
+  r_vals <- r_vals %>% select(-starts_with("tsf"))
+  # r_vals$tsf_0_10 <- as.character(as.logical(r_vals$tsf_0_10))
+  # r_vals$tsf_10_20 <- as.character(as.logical(r_vals$tsf_10_20))
+  # r_vals$tsf_20_25 <- as.character(as.logical(r_vals$tsf_20_25))
+  # r_vals <- r_vals[complete.cases(r_vals), ]
+  return(r_vals)
+  rm(r_vals, r)
+}
+```
+
+Function to conduct multidimensional scaling on the proximity matrix generated from the random forests.
+
+```{r}
+nmds_rf <- function(raw_model, filtered_train_df, species) {
+  if (is.null(raw_model$proximity)) {
+    stop("Random Forest model must be trained with proximity=TRUE to use MDS.")
+  }
+  
+  prox <- raw_model$proximity
+  #classic mds
+  mds_coords <- cmdscale(1 - prox, k = 2)
+  mds_df <- as.data.frame(mds_coords)
+  colnames(mds_df) <- c("Dim1", "Dim2")
+  
+  mds_df$Species <- species
+  mds_df$Carbon_gm2 <- filtered_train_df$Carbon_gm2
+  return(mds_df)
+}
+```
+
+Define some functions to make predictions and plot these estimates against our validation set. I'm using gsub and  strsplit to grab unique identifiers from file names so I can store them in a dataframe for later plotting. This requires a final fit from a model workflow. These functions are nested in the model training function.
+
+```{r}
+library(data.table)
+
+
+pfun <- function(object, new_data){
+  predicted <- predict(object, new_data)$predictions
+}
+
+
+
+
+predict_from_model <- function(file, fit, species){
+  
+  #naming conventions
+  spp <- tools::toTitleCase(strsplit(species, " ")[[1]][1])%>%paste0(" ", strsplit(species, " ")[[1]][2])
+  scenario <- strsplit(basename(file), "-")[[1]][3]
+  yr <- gsub(".*-(\\d+)\\.[a-zA-Z]+$", "\\1", basename(file))
+  raster <- read_raster(file)
+  raster_clean <- raster[complete.cases(raster), ]
+
+  #prediction
+  print(paste0("Processing ", scenario, " scenario ", "for ", spp, " ", "YEAR: ", yr))
+  
+  #2000000 pixels (I intentionally left this number lower for making predictions through time)
+  predicted <- predict(fit, na.omit(raster_clean))#%>%
+  x<-raster_clean %>% select(x)
+  y<-raster_clean %>% select(y)
+  predicted <- cbind(predicted,x,y) %>% slice(seq(1, 2000000, by = 2000)) #%>%
+    #summarise(AvgCarbon_gm2=mean(.pred, na.rm = TRUE),
+    #          SdCarbon_gm2=sd(.pred, na.rm = TRUE))
+  
+
+  #dt <- setDT(as.data.frame(regularPoints))[, AG_C_gm2 :=rep(predicted$.pred, length.out = nrow(regularPoints))]
+  #dt$AG_C_gm2 <- predicted
+  #predicted_clean$ClimateScenario <- scenario
+  predicted$Species <- spp
+  predicted$Year <- yr
+
+  #dt$x <- raster$x
+  #dt$y <- raster$y
+  rm(raster)
+  return(predicted)
+  gc()
+  rm(predicted)
+}
+
+make_validation_df <- function(fit, test_data, species, mean_rmse, mean_rsq){
+  spp <- tools::toTitleCase(strsplit(species, " ")[[1]][1])%>%paste0(" ", strsplit(species, " ")[[1]][2])
+  predicted <- predict(fit, test_data)
+  observed <- test_data$Carbon_gm2
+  vals <- predicted[[1]]
+  df <- rbind(data.frame(Observed=observed, Predicted=vals, Species=spp, RMSE=mean_rmse, RSQ=mean_rsq))
+  return(df)
+}
+```
+
+Model training and fitting function. This is the main function where I split my data into a training and validation set, I then run models across different configurations of split data to return a model which has the best RMSE. I then use cross validation again to perform final fits across different configurations of split data to obtain and average RMSE and the best Variance explained (these are the metrics returned for RF, Ranger, and XGBoost)
+
+I additionally add in models for nearest neighbors, support vector machine, and conditional forest but do not fine tune them.
+
+```{r}
+library(purrr)
+library(tidymodels)
+library(randomForest)
+library(kknn)
+library(kernlab)
+#library(partykit)
+library(vip)
+library(rlang)
+
+species <- c("black spruce", "white spruce", "resin birch", "quaking aspen")
+
+train_model <- function(df, species, response="Carbon_gm2") {
+  print(paste0("running model for: ", species))
+  
+  #filter to one species
+  training_df_one_spp <- training_df %>% filter(Species == species)
+  predictors <- setdiff(names(training_df_one_spp), c("Species", "Carbon_gm2"))
+
+  #train and validation set (stratify the predictor dataset based on nature of the data measured in situ)
+  split_data <- initial_split(training_df_one_spp %>% select(all_of(response), all_of(predictors)), prop = 0.95, strata = all_of(response))
+  
+  #training and test set
+  train_data <- training(split_data)
+  test_data <- testing(split_data)
+  formula <- as.formula(paste(response, "~", paste(predictors, collapse = "+")))
+  
+  #tidy models recipe (swapping in entire dataset)
+  recipe <- recipe(formula = formula, data = training_df_one_spp) #%>% 
+    #step_nzv(all_predictors()) %>%
+    #step_corr(all_numeric_predictors(), threshold = 0.80, use = "pairwise.complete.obs", method = "pearson")
+  
+  #define models to run (nts: cite packages)
+  #use additional script to set up cforest to be tidymodels friendly
+  #source("scripts/define_cforest_model.R")
+  m_rf <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("randomForest", proximity = TRUE)
+  m_ranger <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("ranger")
+  m_xgb <- boost_tree(mtry = tune(), trees = tune(), min_n = tune()) %>% set_mode("regression") %>% set_engine("xgboost")
+  m_kknn <- nearest_neighbor(neighbors=tune(), weight_func = tune(), dist_power = tune()) %>% set_mode("regression") %>% set_engine("kknn")
+  m_svm <- svm_rbf(cost= tune(), rbf_sigma = tune()) %>% set_mode("regression") %>% set_engine("kernlab")
+  #m_cforest <- cforest() %>% set_mode("regression") %>% set_engine("partykit")
+  models <- list(rf=m_rf,ranger=m_ranger)
+  
+  #params and grids
+  #top3_params <- parameters(mtry(), trees(), min_n())
+  # I think these two need recipes where the data is normalized
+  kknn_params <- parameters(neighbors(range = c(4, 25)), weight_func(values = c("rectangular", "triangular", "biweight", 
+                                                                                "triweight", "epanechnikov", "gaussian")),dist_power(range = c(1, 2)))  
+  svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
+    
+  #rf, ranger, and xgb use the same params
+  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(200,800,400), min_n = seq(1, 12, 3))
+
+  kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
+  svm_grid <- grid_regular(svm_params, levels = 10)
+  grids <- list(rf_grid=rf_grid, ranger_grid=rf_grid)
+  
+  #cross validation
+  nfold <- 5
+  print(paste0("performing cross validation across ", nfold, " folds"))
+  pv_folds <- vfold_cv(training_df_one_spp, v = nfold, strata = all_of(response))
+
+  #store the results for all models (selecting the best model across the cross-val folds based on RMSE)
+  #working outside of the map2 function to generate predictions
+  
+  #results <- map2(models, grids, function(model, grid) {
+  #trying to leave this dynamic
+  tuned_results <- workflow() %>% add_recipe(recipe) %>% add_model(m_rf) %>% 
+    tune_grid(resamples = pv_folds, grid = rf_grid, metrics = metric_set(rmse, rsq, mae))
+  autoplot(tuned_results)
+  best_params <- select_best(tuned_results, metric="rmse")
+  wflow <- finalize_workflow(workflow() %>% add_recipe(recipe) %>% add_model(m_rf), best_params)
+  
+  #fit across the resamples
+  fit <- fit_resamples(wflow, resamples = pv_folds, metrics = metric_set(rmse, rsq, mae))
+  mean_rmse <- collect_metrics(fit) %>% filter(.metric == "rmse") %>% pull(mean)
+  mean_rsq <- collect_metrics(fit) %>% filter(.metric == "rsq") %>% pull(mean)
+  
+  #print(paste0("MODEL: ", model$engine))
+  print(paste("Mean RMSE across folds: ", mean_rmse))
+  print(paste("Mean R² across folds: ", mean_rsq))
+  
+  final_fit <- fit(wflow, training_df_one_spp)
+  
+  #nmds
+  raw_model <- extract_fit_engine(final_fit)
+  mds_df <- nmds_rf(raw_model, training_df_one_spp, species)
+  
+  #plot for one species
+  mdsplot <- ggplot(mds_df, aes(x = Dim1, y = Dim2, color = Carbon_gm2)) +
+    geom_point(size=4,alpha=0.8) +
+    scale_color_viridis_c(option="turbo",direction=1)+
+    theme_bw()+
+    labs(title=paste0(species))+
+    theme(legend.position="bottom")
+  print(mdsplot)
+  
+  #extract
+  finalized_model <- extract_fit_parsnip(final_fit)
+  
+  ntree <-  quo_get_expr(finalized_model[[2]]$args$trees)
+  mtry <- quo_get_expr(finalized_model[[2]]$args$mtry)
+  min_number <- quo_get_expr(finalized_model[[2]]$args$min_n)
+  
+  print(paste("Number of trees: ", ntree))
+  print(paste("mtry: ", mtry))
+  print(paste("min n", min_number))
+  
+  # importance scores (permuation based)
+  importance <- vi(finalized_model)
+  importance$Spp <- species
+  #stored_plt <- vip(importance, num_features = 10, geom = "point")
+  
+  #  return(final_fit)
+  #})
+  
+  #generate predictions (using the regular RF model fit)
+  #all_predictions <- lapply(unique(r_files), function(file) {predict_from_model(file, final_fit, species)})
+  #all_predictions_df <- bind_rows(all_predictions)
+  
+  #generate validation data for plotting
+  #validation_fit <- fit(wflow, test_data)
+  #validation_pred_df <- make_validation_df(validation_fit, test_data, species, mean_rmse, mean_rsq)
+    
+  return(list(train_dfs=NULL, 
+              test_dfs=NULL, 
+              mds_data=mds_df,
+              final_models=finalized_model,
+              varImp_data=NULL, 
+              all_predictions=NULL, 
+              validation_data=NULL))
+  
+  rm(all_predictions, all_predictions_df)
+}
+
+#run the models
+model_output <- lapply(species, function(spp){train_model(training_df,species=spp)})
+#varImp_all_spp <- do.call(rbind, lapply(model_output[1:4], function(x) x$varImp_data))
+predictions <- do.call(rbind, lapply(model_output[1:4], function(x) x$all_predictions))
+#validations <- do.call(rbind, lapply(model_output[1:4], function(x) x$validation_data))
+#metrics <- do.call(rbind, lapply(model_output[1:4], function(x) x$final_models))
+proximity_data <- do.call(rbind, lapply(model_output[1:4], function(x) x$mds_data))
+
+#write.csv(predictions, "F:/jetstream/data/PredictedCarbon_RasterValues_04252025.csv", row.names = FALSE)
+#write.csv(varImp_all_spp, "F:/jetstream/data/VariableImportance_04162025.csv", row.names = FALSE)
+write.csv(proximity_data, "data/analysis/MDS_Data_RS.csv", row.names = FALSE)
+
+```
+
+Graph the predicted vs observed data for the validation fits.
+
+```{r}
+library(ggplot2)
+library(viridis)
+
+#plotting validation data vs predictions for each species with a 60/40 split
+validation_plot <- ggplot(validations, aes(x = Observed, y = Predicted, color = abs(Predicted-Observed))) +
+  #geom_smooth(method = "lm", color = "black", linetype = "dashed", se = FALSE)+
+  geom_point(size = 5, alpha = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "solid") +
+  scale_color_viridis(option = "H", direction=-1)+
+  facet_grid(~ Species, nrow(1)) +
+  theme_bw() +
+  scale_x_continuous(limits=c(0,500))+
+  scale_y_continuous(limits=c(0,500))+
+  labs(x = "Observed", y = "Predicted") +
+  theme(legend.position = "none", strip.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  geom_text(aes(x = 0.9 * max(Observed), y = 0.1 * max(Predicted), label = paste("r2:", round(RSQ, 2), "\nRMSE:", round(RMSE, 2))),
+            size = 10, hjust = 1, vjust = 0, color = "black")
+
+plot(validation_plot)
+```
+
+Graph carbon through time from the rasters we made predictions on.
+
+```{r}
+library(paletteer)
+paletteer_d("lisa::EdwardHopper")
+
+colors <- c("Alaskan birch" = "#67161CFF","Black spruce" = "#3F6148FF",
+            "White spruce" = "#A4804CFF","Trembling aspen" = "#4B5F80FF")
+
+predictions%>%
+  mutate(Year=as.numeric(Year))%>%
+  mutate(Species = ifelse(Species == "Resin birch", "Alaskan birch", Species),
+         Species = ifelse(Species == "Quaking aspen", "Trembling aspen", Species))%>%
+  #plotting
+  ggplot(aes(x=Year, y=SumCarbon_gm2, color = Species))+
+  #geom_ribbon(aes(ymin = SumCarbon_gm2 - SdCarbon_gm2 , ymax = SumCarbon_gm2 + SdCarbon_gm2 , fill = Species), alpha = 0.4, color = NA)+
+  #geom_smooth()+
+  geom_point()+
+  geom_line(linewidth=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values = colors)+
+  #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
+  facet_grid(Species~.)+
+  theme_bw()+
+  theme(legend.position = "none")
+```
+
+Proportional graph through time
+
+```{r}
+predictions%>%
+  mutate(Year=as.numeric(Year))%>%
+  mutate(Species = ifelse(Species == "Resin birch", "Alaskan birch", Species),
+         Species = ifelse(Species == "Quaking aspen", "Trembling aspen", Species))%>%
+  group_by(Year) %>%
+  mutate(Proportion = SumCarbon_gm2 / sum(SumCarbon_gm2)) %>%
+  ungroup() %>%
+  ggplot(aes(x = as.numeric(Year), y = Proportion, fill = Species)) +
+  #geom_area() +
+  geom_col(position="dodge")+
+  scale_fill_manual(values = colors) +
+  facet_wrap(~Species)+
+  theme_bw() +
+  ylab("Proportion of Total Carbon") +
+  xlab("Year")+
+  theme(legend.position = "none")
+```
+
+Graph variable importance
+
+```{r}
+library(forcats)
+varImp_all_spp%>%
+  
+  mutate(Spp = ifelse(Spp == "resin birch", "Alaskan birch", Spp),
+         Spp = ifelse(Spp == "quaking aspen", "Trembling aspen", Spp),
+         Spp = ifelse(Spp == "black spruce", "Black spruce", Spp),
+         Spp = ifelse(Spp == "white spruce", "White spruce", Spp))%>%
+  
+  group_by(Spp) %>%
+  slice_max(order_by = Importance, n = 7, with_ties = FALSE) %>%
+  arrange(Spp, desc(Importance))%>%
+  ungroup() %>%
+  ggplot(aes(x=Importance, y=Variable, fill=Spp))+
+  #geom_point()+
+  geom_bar(stat="identity")+
+  #geom_line(linewidth=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values = colors)+
+  #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
+  facet_grid(Spp~., scales = "free_y", space = "free_y")+
+  theme_bw()+
+  theme(legend.position="none")
+```

@@ -1,0 +1,253 @@
+---
+title: "Graphing Random Forest and LANDIS Carbon"
+author: "Wesley Rancher"
+date: "2025-04-24"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("F:/jetstream/")
+
+library(dplyr)
+library(ggplot2)
+```
+
+Random forest by itself
+
+```{r}
+predictions <- read.csv("data/PredictedCarbon_RasterValues_04252025.csv")
+
+predictions$Model <- "Random forest"
+
+colors <- c("Alaskan birch" = "#67161CFF","Black spruce" = "#3F6148FF",
+            "White spruce" = "#A4804CFF","Trembling aspen" = "#4B5F80FF")
+
+
+predictions<- predictions%>%
+  mutate(Year=as.numeric(Year))%>%
+  mutate(Species = ifelse(Species == "Resin birch", "Alaskan birch", Species),
+         Species = ifelse(Species == "Quaking aspen", "Trembling aspen", Species))
+
+#needs grouping
+predictions%>%
+  #plotting
+  ggplot(aes(x=Year, y=.pred, color = Species))+
+  #geom_ribbon(aes(ymin = SumCarbon_gm2 - SdCarbon_gm2 , ymax = SumCarbon_gm2 + SdCarbon_gm2 , fill = Species), alpha = 0.4, color = NA)+
+  geom_point()+
+  geom_smooth(method = "loess", alpha=0.4)+
+  #geom_line(linewidth=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values = colors)+
+  #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
+  facet_grid(Species~.)+
+  theme_bw()+
+  theme(legend.position = "none")
+```
+
+
+Add in landis
+
+```{r}
+#reference files to get regular points
+ref <- rast("F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/Cleaned_Inputs/AK_ClimateMap_10_Regions.tif")
+bounds <- vect("F:/randomForest_Landis/input/shp/FullLandscapeV3_082722.shp")
+
+crs(ref) <- "EPSG:3338"
+ref_cleaned <- mask(ref, bounds)
+regularPoints <- spatSample(ref_cleaned, size=2000000, method = "regular", as.points = TRUE, ext = bounds, na.rm=TRUE)
+
+#out patterns (the files I want)
+years <- 0:24
+species <- c("BlackSpruce", "WhiteSpruce", "QuakingAspen", "PaperBirch")
+species_pattern <- paste(species, collapse = "|")
+year_pattern <- paste0("-",years,".img", collapse = "|")
+combined_pattern <- paste0("(", species_pattern, ").*(", year_pattern, ")")
+
+#grab files
+outdir <- "F:/Rancher_Sims_Full_Landscape/FinalSimulationsThesis/TestRuns/interior_hist_ncar_04252025_GrowthOnly_AllSpp/biomass/"
+biomass_files_one_rep <- list.files(outdir, pattern = combined_pattern, full.names=T)
+
+#get average
+get_biomass_average <- function(file){
+  bname <- basename(file)
+  species <- strsplit(bname, "-")[[1]][1]
+  yr <- sub(".*-(\\d+)\\.img", "\\1", bname)
+  
+  #read the file in as a raster and extract values
+  r <- rast(file)
+  crs(r) <- "EPSG:3338"
+  ext(r) <- ext(ref_cleaned)
+  r <- flip(r, direction="vertical")
+  r_clipped <- mask(r, bounds)
+  r_w_ecoreg <- c(r_clipped,ref_cleaned)
+  
+  #summary stats
+  r_vals <- terra::extract(r_clipped, regularPoints, xy = TRUE)%>%
+      mutate(.pred=Layer_1*0.47)%>%select(-Layer_1)%>%
+      slice(seq(1, 2000000, by = 2000))
+      #group_by(AK_ClimateMap_10_Regions)%>%
+      #rename(Ecoregion=AK_ClimateMap_10_Regions)%>%
+      #summarise(AvgCarbon_gm2=mean(Layer_1*0.47, na.rm = TRUE),
+      #          SdCarbon_gm2=sd(Layer_1*0.47, na.rm = TRUE))
+      
+  #add IDs
+  r_vals$Species <- species
+  r_vals$Year <- as.numeric(yr)+2000
+  return(r_vals)
+}
+
+processed_biomass_maps <- lapply(biomass_files_one_rep, get_biomass_average)
+landis_predictions <- do.call(rbind, processed_biomass_maps) %>% select(-ID)
+landis_predictions$Model <- "LANDIS-II"
+
+```
+
+Plot together
+
+```{r}
+
+predictions$Model <- "Random forest"
+master_df <- rbind(predictions, landis_predictions)%>%#use this df for any raster analysis to compare?
+  mutate(Species = ifelse(Species == "PaperBirch", "Alaskan birch", Species),
+         Species = ifelse(Species == "QuakingAspen", "Trembling aspen", Species),
+         Species = ifelse(Species == "BlackSpruce", "Black spruce", Species),
+         Species = ifelse(Species == "WhiteSpruce", "White spruce", Species))
+summarised_df <- master_df %>%
+  mutate(Year=as.numeric(Year)) %>%
+  
+  group_by(Year, Species, Model) %>%
+  summarise(AvgCarbon_gm2=mean(.pred, na.rm=TRUE),
+            SDCarbon_gm2=sd(.pred, na.rm=TRUE))
+
+model_colors <- c("darkorange", "darkorchid")
+#double line plot faceted by species
+summarised_df %>%
+  ggplot(aes(x=Year, y=AvgCarbon_gm2, color = Species, group = Model, linetype = Model))+
+  #geom_ribbon(aes(ymin = AvgCarbon_gm2 - SDCarbon_gm2 , ymax = AvgCarbon_gm2 + SDCarbon_gm2 , fill = Model, group = Model), position = "identity", alpha = 0.4)+
+  #geom_smooth()+
+  geom_line(linewidth=1.25)+
+  #geom_point()+
+  scale_color_manual(values = colors)+
+  scale_fill_manual(values = model_colors)+
+  coord_cartesian(ylim = c(0, NA))+
+  facet_grid(Species~., scales = "free")+
+  theme_bw()+
+  labs(y="Aboveground C (g m²)")+
+  theme(legend.position = "none")+
+  guides(color = "none", fill = "none")
+
+#difference
+library(tidyr)
+diff_df <- summarised_df %>%
+  select(Year, Species, Model, AvgCarbon_gm2) %>%
+  pivot_wider(names_from = Model, values_from = AvgCarbon_gm2) %>%
+  mutate(Diff = `LANDIS-II` - `Random forest`)
+
+ggplot(diff_df, aes(x = Year, y = Diff, color = Species)) +
+  geom_line(linewidth=1.2) +
+  #geom_point()+
+  scale_color_manual(values=colors)+
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_grid(Species~., scales = "free_y") +
+  labs(y = "Differenced Aboveground C (g m²)", x = "Year") +
+  theme_bw()+
+  theme(legend.position = "none")
+```
+
+Random forest comparison. Scripts for random forest on remote sensing and landis data are in this directory. From those scripts I output the variable importance scores for each species as dataframes that way I can make some faceted plots here.
+
+1) variable importances
+2) trends in those variables (ordination plot?)
+3) model performance?? (just remote sensing?)
+
+```{r}
+library(patchwork)
+#clean var imp output a little
+varImp_rf <- read.csv("data/VariableImportance_04162025.csv")  %>%
+  mutate(Model = "Random-forest")%>%
+  mutate(Spp = ifelse(Spp == "resin birch", "Alaskan birch", Spp),
+         Spp = ifelse(Spp == "quaking aspen", "Trembling aspen", Spp),
+         Spp = ifelse(Spp == "black spruce", "Black spruce", Spp),
+         Spp = ifelse(Spp == "white spruce", "White spruce", Spp))
+
+varImp_landis <- read.csv("data/VariableImportance_LANDIS_04282025.csv") %>%
+  mutate(Model = "LANDIS-II")%>%
+  rename(Spp=Species)%>%
+  mutate(Spp = ifelse(Spp == "PaperBirch", "Alaskan birch", Spp),
+         Spp = ifelse(Spp == "QuakingAspen", "Trembling aspen", Spp),
+         Spp = ifelse(Spp == "BlackSpruce", "Black spruce", Spp),
+         Spp = ifelse(Spp == "WhiteSpruce", "White spruce", Spp))
+  
+#join
+#varImp_df_main <- bind_rows(varImp_rf, varImp_landis) %>% mutate(Model=as.factor(Model))
+
+#random forest
+vip_rf <- varImp_rf%>%
+  
+  group_by(Spp) %>%
+  slice_max(order_by = Importance, n = 7, with_ties = FALSE) %>%
+  arrange(Spp, desc(Importance))%>%
+  ungroup() %>%
+  ggplot(aes(x=Importance, y=Variable, fill=Spp))+
+  #geom_point()+
+  geom_bar(stat="identity")+
+  #geom_line(linewidth=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
+  facet_grid(Spp~., scales = "free_y")+
+  theme_bw()+
+  #theme(axis.line=element_line(color = "black"))+
+  labs(title = "Random forest", x="Feature importance")+
+  theme(axis.text = element_text(color = "black", size = 10),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        axis.title.x = element_text(color = "black"),
+        strip.text = element_text(color = "black", size = 11),
+        legend.position = "none",
+        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.minor = element_blank())
+
+#instead of faceting I just make two plots and add
+vip_land <- varImp_landis%>%
+  
+  group_by(Spp) %>%
+  slice_max(order_by = Importance, n = 7, with_ties = FALSE) %>%
+  arrange(Spp, desc(Importance))%>%
+  ungroup() %>%
+  ggplot(aes(x=Importance, y=Variable, fill=Spp))+
+  #geom_point()+
+  geom_bar(stat="identity")+
+  #geom_line(linewidth=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
+  facet_grid(Spp~., scales = "free_y")+
+  theme_bw()+
+  #theme(axis.line=element_line(color = "black"))+
+  labs(title = "LANDIS-II", x="Feature importance")+
+  theme(axis.text = element_text(color = "black", size = 10),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        axis.title.x = element_text(color = "black"),
+        strip.text = element_text(color = "black", size = 11),
+        legend.position = "none",
+        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.minor = element_blank())
+
+vip_rf | vip_land
+```
+
+proximity matrix results from the random forest
+
+```{r}
+
+
+ggplot(mds_df, aes(x = Dim1, y = Dim2, color = Species)) +
+  geom_point() +
+  theme_minimal()
+
+```
