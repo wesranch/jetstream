@@ -27,8 +27,13 @@ library(dplyr)
 
 #Training Dataframe was prepared in (../scripts/grf_ag_carbon.py)
 #these are in the same order as the raster bands
-training_df <- read.csv("data/analysis/RandomForest_TrainingDATA_04242025.csv") %>% select(-PSP) %>% select(-starts_with("tsf_")) #%>% select(-dep2_permafrost, -pr, -tas)
-#training_df <- read.csv("data/RandomForest_TrainingDATA_04102025_V2.csv") %>% select(-PSP)#one with Karen Short fire size added
+training_df <- read.csv("data/analysis/RandomForest_TrainingDATA_04242025.csv") %>%
+ select(-PSP) %>%
+ select(-starts_with("tsf_")) #%>% select(-dep2_permafrost, -pr, -tas)
+
+# training_df <- read.csv("data/RandomForest_TrainingDATA_04242025.csv") %>% 
+#   select(-PSP) %>%
+#   select(-starts_with("tsf_"))
 ```
 
 Add lat/lon as bands to the rasters since they are used in model training. Here I generated systematic points within the landscape amounting to ~10% of the entire raster to make predictions for and do change detection. I also make predictions for the raster cells that correspond to actual plot locations to make comparisons of predictions at a plot and regional level.
@@ -109,20 +114,36 @@ read_raster <- function (file) {
 Function to conduct multidimensional scaling on the proximity matrix generated from the random forests.
 
 ```{r}
+library(vegan)
 nmds_rf <- function(raw_model, filtered_train_df, species) {
   if (is.null(raw_model$proximity)) {
     stop("Random Forest model must be trained with proximity=TRUE to use MDS.")
   }
   
   prox <- raw_model$proximity
-  #classic mds
-  mds_coords <- cmdscale(1 - prox, k = 2)
-  mds_df <- as.data.frame(mds_coords)
-  colnames(mds_df) <- c("Dim1", "Dim2")
+  
+  #nmds
+  mds_coords <- monoMDS(1 - prox, k = 2, maxit=100, model="local")
+  mds_df <- as.data.frame(scores(mds_coords, display  = "sites"))
+  #colnames(mds_df) <- c("Dim1", "Dim2")
   
   mds_df$Species <- species
   mds_df$Carbon_gm2 <- filtered_train_df$Carbon_gm2
-  return(mds_df)
+  mds_df$stress <- mds_coords$stress#for reporting
+  
+  #join to predictors
+  numeric_predictors <- filtered_train_df %>% 
+    select(where(is.numeric), -Carbon_gm2, -starts_with("severity_"), -total_fires) %>% 
+    na.omit()
+  
+  #environmental fit
+  ef <- envfit(mds_coords, numeric_predictors, permutations = 999)
+  ef_df <- as.data.frame(scores(ef, "vectors"))
+  ef_df$Feature <- rownames(ef_df)
+  ef_df$pval <- ef$vectors$pvals
+  ef_df$Species <- species
+
+  return(list(mds=mds_df, envfit=ef_df))
 }
 ```
 
@@ -239,7 +260,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
   svm_params <- parameters(cost(range = c(-8, 4), trans = scales::log10_trans()), rbf_sigma(range = c(-3, 0), trans = scales::log10_trans()))
     
   #rf, ranger, and xgb use the same params
-  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(200,800,400), min_n = seq(1, 12, 3))
+  rf_grid <- expand.grid(mtry = seq(5, 20, 5), trees = seq(200,800,200), min_n = seq(1, 12, 3))
 
   kknn_grid <- grid_regular(kknn_params, levels = c(4,3,2))
   svm_grid <- grid_regular(svm_params, levels = 10)
@@ -274,16 +295,16 @@ train_model <- function(df, species, response="Carbon_gm2") {
   
   #nmds
   raw_model <- extract_fit_engine(final_fit)
-  mds_df <- nmds_rf(raw_model, training_df_one_spp, species)
+  mds_results <- nmds_rf(raw_model, training_df_one_spp, species)
   
   #plot for one species
-  mdsplot <- ggplot(mds_df, aes(x = Dim1, y = Dim2, color = Carbon_gm2)) +
-    geom_point(size=4,alpha=0.8) +
-    scale_color_viridis_c(option="turbo",direction=1)+
-    theme_bw()+
-    labs(title=paste0(species))+
-    theme(legend.position="bottom")
-  print(mdsplot)
+  # mdsplot <- ggplot(mds_df, aes(x = MDS1, y = MDS2, color = Carbon_gm2)) +
+  #   geom_point(size=4,alpha=0.8) +
+  #   scale_color_viridis_c(option="turbo",direction=1)+
+  #   theme_bw()+
+  #   labs(title=paste0(species))+
+  #   theme(legend.position="bottom")
+  # print(mdsplot)
   
   #extract
   finalized_model <- extract_fit_parsnip(final_fit)
@@ -314,7 +335,7 @@ train_model <- function(df, species, response="Carbon_gm2") {
     
   return(list(train_dfs=NULL, 
               test_dfs=NULL, 
-              mds_data=mds_df,
+              mds_data=mds_results,
               final_models=finalized_model,
               varImp_data=NULL, 
               all_predictions=NULL, 
@@ -329,11 +350,13 @@ model_output <- lapply(species, function(spp){train_model(training_df,species=sp
 predictions <- do.call(rbind, lapply(model_output[1:4], function(x) x$all_predictions))
 #validations <- do.call(rbind, lapply(model_output[1:4], function(x) x$validation_data))
 #metrics <- do.call(rbind, lapply(model_output[1:4], function(x) x$final_models))
-proximity_data <- do.call(rbind, lapply(model_output[1:4], function(x) x$mds_data))
+proximity_data <- do.call(rbind, lapply(model_output[1:4], function(x) x$mds_data[[1]]))
+environmental_fit_data <- do.call(rbind, lapply(model_output[1:4], function(x) x$mds_data[[2]]))
 
 #write.csv(predictions, "F:/jetstream/data/PredictedCarbon_RasterValues_04252025.csv", row.names = FALSE)
 #write.csv(varImp_all_spp, "F:/jetstream/data/VariableImportance_04162025.csv", row.names = FALSE)
-write.csv(proximity_data, "data/analysis/MDS_Data_RS.csv", row.names = FALSE)
+write.csv(proximity_data, "data/analysis/MDS_Data_RS_04292025.csv", row.names = FALSE)
+write.csv(environmental_fit_data, "data/analysis/EnvFit_Data_RS_04292025.csv", row.names = FALSE)
 
 ```
 

@@ -13,12 +13,14 @@ setwd("F:/jetstream/")
 
 library(dplyr)
 library(ggplot2)
+library(terra)
+library(patchwork)
 ```
 
 Random forest by itself
 
 ```{r}
-predictions <- read.csv("data/PredictedCarbon_RasterValues_04252025.csv")
+predictions <- read.csv("data/analysis/PredictedCarbon_RasterValues_04252025.csv")
 
 predictions$Model <- "Random forest"
 
@@ -105,7 +107,7 @@ landis_predictions$Model <- "LANDIS-II"
 
 ```
 
-Plot together
+Plot sampled carbon through time together
 
 ```{r}
 
@@ -136,7 +138,8 @@ summarised_df %>%
   facet_grid(Species~., scales = "free")+
   theme_bw()+
   labs(y="Aboveground C (g m²)")+
-  theme(legend.position = "none")+
+  theme(strip.text = element_text(color = "black", size = 11),
+        legend.position = "none")+
   guides(color = "none", fill = "none")
 
 #difference
@@ -154,7 +157,8 @@ ggplot(diff_df, aes(x = Year, y = Diff, color = Species)) +
   facet_grid(Species~., scales = "free_y") +
   labs(y = "Differenced Aboveground C (g m²)", x = "Year") +
   theme_bw()+
-  theme(legend.position = "none")
+  theme(strip.text = element_text(color = "black", size = 11),
+        legend.position = "none")
 ```
 
 Random forest comparison. Scripts for random forest on remote sensing and landis data are in this directory. From those scripts I output the variable importance scores for each species as dataframes that way I can make some faceted plots here.
@@ -164,16 +168,15 @@ Random forest comparison. Scripts for random forest on remote sensing and landis
 3) model performance?? (just remote sensing?)
 
 ```{r}
-library(patchwork)
 #clean var imp output a little
-varImp_rf <- read.csv("data/VariableImportance_04162025.csv")  %>%
+varImp_rf <- read.csv("data/analysis/VariableImportance_04162025.csv")  %>%
   mutate(Model = "Random-forest")%>%
   mutate(Spp = ifelse(Spp == "resin birch", "Alaskan birch", Spp),
          Spp = ifelse(Spp == "quaking aspen", "Trembling aspen", Spp),
          Spp = ifelse(Spp == "black spruce", "Black spruce", Spp),
          Spp = ifelse(Spp == "white spruce", "White spruce", Spp))
 
-varImp_landis <- read.csv("data/VariableImportance_LANDIS_04282025.csv") %>%
+varImp_landis <- read.csv("data/analysis/VariableImportance_LANDIS_04282025.csv") %>%
   mutate(Model = "LANDIS-II")%>%
   rename(Spp=Species)%>%
   mutate(Spp = ifelse(Spp == "PaperBirch", "Alaskan birch", Spp),
@@ -202,13 +205,14 @@ vip_rf <- varImp_rf%>%
   theme_bw()+
   #theme(axis.line=element_line(color = "black"))+
   labs(title = "Random forest", x="Feature importance")+
-  theme(axis.text = element_text(color = "black", size = 10),
-        axis.text.x = element_blank(),
-        axis.title = element_blank(),
-        axis.title.x = element_text(color = "black"),
-        strip.text = element_text(color = "black", size = 11),
+  theme(axis.text = element_text(color = "black", size = 14),
+        axis.text.x = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 20),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        strip.text = element_blank(),
         legend.position = "none",
-        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.major = element_line(color = "gray20", linewidth = .25),
         panel.grid.minor = element_blank())
 
 #instead of faceting I just make two plots and add
@@ -222,6 +226,9 @@ vip_land <- varImp_landis%>%
   #geom_point()+
   geom_bar(stat="identity")+
   #geom_line(linewidth=1)+
+  # geom_text(aes(x = Importance, y = Variable, label = "x", size = Importance),
+  #           color = "black", hjust = -0.1, vjust = 0.5) +
+  # scale_size_continuous(range = c(2, 8))+
   scale_color_manual(values=colors)+
   scale_fill_manual(values=colors)+
   #scale_x_continuous(limits=c(2000,2025), breaks = 5)+
@@ -229,25 +236,103 @@ vip_land <- varImp_landis%>%
   theme_bw()+
   #theme(axis.line=element_line(color = "black"))+
   labs(title = "LANDIS-II", x="Feature importance")+
-  theme(axis.text = element_text(color = "black", size = 10),
-        axis.text.x = element_blank(),
-        axis.title = element_blank(),
-        axis.title.x = element_text(color = "black"),
-        strip.text = element_text(color = "black", size = 11),
+  theme(axis.text = element_text(color = "black", size = 14),
+        axis.text.x = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 20),
+        axis.title  = element_blank(),
+        axis.title.x = element_text(color = "black", hjust = -1, 
+                                    vjust = -1, size = 18),
+        strip.text = element_text(color = "black", size = 16),
         legend.position = "none",
-        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.major = element_line(color = "gray20", linewidth = .25),
         panel.grid.minor = element_blank())
 
-vip_rf | vip_land
+double_vip <- (vip_rf | vip_land)
+
+#save
+png("writing/figures/Results_VariableImportance_BothModels.png", width = 12, height = 10, units = "in", res = 300)
+print(double_vip)
+dev.off()
 ```
 
-proximity matrix results from the random forest
+proximity matrix results from the random forests
 
 ```{r}
+mds_rs <- read.csv("data/analysis/MDS_Data_RS_04292025.csv")  %>%
+  mutate(Model = "Random-forest")%>%
+  mutate(Species = ifelse(Species == "resin birch", "Alaskan birch", Species),
+         Species = ifelse(Species == "quaking aspen", "Trembling aspen", Species),
+         Species = ifelse(Species == "black spruce", "Black spruce", Species),
+         Species = ifelse(Species == "white spruce", "White spruce", Species))
+
+mds_landis <- read.csv("data/analysis/MDS_Data_LANDIS_04292025.csv") %>%
+  mutate(Model = "LANDIS-II")%>%
+  rename(Carbon_gm2 = ag_carbon)%>%
+  mutate(Species = ifelse(Species == "PaperBirch", "Alaskan birch", Species),
+         Species = ifelse(Species == "QuakingAspen", "Trembling aspen", Species),
+         Species = ifelse(Species == "BlackSpruce", "Black spruce", Species),
+         Species = ifelse(Species == "WhiteSpruce", "White spruce", Species))
+
+#most important features
+important_rs_features <- varImp_rf%>%
+  group_by(Spp) %>%
+  slice_max(order_by = Importance, n = 5, with_ties = FALSE) %>%
+  arrange(Spp, desc(Importance))
+
+#environmental fit data
+env_rs <- read.csv("data/analysis/EnvFit_Data_RS_04292025.csv") %>%
+  mutate(Species = ifelse(Species == "resin birch", "Alaskan birch", Species),
+         Species = ifelse(Species == "quaking aspen", "Trembling aspen", Species),
+         Species = ifelse(Species == "black spruce", "Black spruce", Species),
+        Species = ifelse(Species == "white spruce", "White spruce", Species))%>%
+  semi_join(important_rs_features, by = c("Feature" = "Variable", "Species" = "Spp"))
 
 
-ggplot(mds_df, aes(x = Dim1, y = Dim2, color = Species)) +
-  geom_point() +
-  theme_minimal()
+mds_rs_plot <- mds_rs %>%
+  ggplot(aes(x = MDS1, y = MDS2, color = Carbon_gm2)) +
+    geom_point(size=6,alpha=0.1) +
+    scale_color_viridis_c(option="plasma",direction=1)+
+    #scale_color_gradient(low = "black", high = "gray80")+
+  
+    #environmental vectors
+    geom_segment(data = env_rs,
+                 aes(x = 0, y = 0, xend = MDS1, yend = MDS2),
+                 arrow = arrow(length = unit(0.4, "cm")),
+                 inherit.aes = FALSE,
+                 color = "red", linewidth = 0.4) +
+    geom_text(data = env_rs,
+              aes(x = MDS1, y = MDS2, label = Feature),
+              inherit.aes = FALSE,
+              color = "black", size = 4)+
+    theme_bw()+
+    facet_grid(Species~., scales = "free")+
+    labs(title="Random forest")+
+    theme(axis.text = element_text(color = "black", size = 10),
+          axis.text.x = element_text(color = "black", size = 10),
+          axis.title = element_text(color = "black", size = 10),
+          axis.title.x = element_blank(),
+          strip.text = element_blank(),
+          legend.position = "none",
+          panel.grid.major = element_line(color = "gray20", linewidth = .25),
+          panel.grid.minor = element_blank())
 
+mds_landis_plot <- mds_landis %>%
+  ggplot(aes(x = MDS1, y = MDS2, color = Carbon_gm2)) +
+    geom_point(size=5,alpha=0.3) +
+    scale_color_viridis_c(option="viridis",direction=1)+
+    theme_bw()+
+    facet_grid(Species~., scales = "free")+
+    labs(title="LANDIS-II")+
+    theme(axis.text = element_text(color = "black", size = 10),
+          axis.text.x = element_text(color = "black", size = 10),
+          axis.title = element_blank(),
+          axis.title.x = element_text(color = "black", hjust = -.16, 
+                                      vjust = -.05, size = 10),
+    
+          strip.text = element_text(color = "black", size = 11),
+          legend.position = "none",
+          panel.grid.major = element_line(color = "gray20", linewidth = .25),
+          panel.grid.minor = element_blank())
+
+(mds_rs_plot) | (mds_landis_plot)
 ```
