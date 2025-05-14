@@ -1,0 +1,205 @@
+---
+title: "Map analysis"
+author: "Wesley Rancher"
+date: "2025-05-08"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(purrr)
+library(viridis)
+```
+
+Files
+
+```{r}
+mapdir <- "/Users/wancher/Documents/thesis/data/MapAnalysis/"
+
+#landis reference files
+ref <- rast(paste0(mapdir, "AK_ClimateMap_10_Regions.tif"))
+bounds <- vect(paste0(mapdir, "../map-files/FullLandscapeV3_082722.shp"))
+
+#projection
+albers <- "EPSG:3338"
+
+#eric levenson's pond and lake dataset to mask
+# pond_files <- list.files(paste0(mapdir, "Alaska_Lake_Pond_Occurrence_2399/data/"), pattern=".tif", full.names=TRUE)
+# pond_collection <- sprc(lapply(pond_files[c(5,6)], rast))
+# pond_m <- mosaic(pond_collection)
+# crs(pond_m) <- albers
+# ext(pond_m) <- ext(bounds)
+# ponds_r <- mask(pond_m, bounds)
+```
+
+Define functions to manipulate raster data and convert it to dataframes
+
+```{r setup, include=TRUE}
+crs(ref) <- albers
+ref_cleaned <- mask(ref, bounds)
+
+
+reclass_matrix_land <- matrix(
+  c(0.1, 400, 1,         
+    400, 700, 2,     
+    700, 1000, 3,      
+    1000, 1500, 4,
+    1500, 2500, 5,
+    2500, 4500, 6
+  ), ncol = 3, byrow = TRUE)
+
+reclass_matrix_rs <- matrix(
+  c(0.1, 50, 1,         
+    50, 150, 2,     
+    150, 300, 3,      
+    300, 450, 4,
+    450, 700, 5
+  ), ncol = 3, byrow = TRUE)
+
+project_landis <- function(file){
+  r <- rast(file)
+  crs(r) <- albers
+  ext(r) <- ext(ref_cleaned)
+  r <- flip(r, direction="vertical")
+  r_clipped <- mask(r, bounds)
+  
+  #remove inactive cells and water bodies
+  cleanr <- mask(r_clipped, ref_cleaned, maskvalues=0)
+  classified_r <- classify(cleanr*0.47, reclass_matrix_land)
+  #cleanr <- mask(cleanr, ponds_r)#lakes and ponds
+  
+  df <- as.data.frame(cleanr, xy = TRUE)
+  df$Model <- "LANDIS-II"
+  df$ID <- basename(file)
+  print(dim(df))
+  return(cleanr)
+}
+project_rs <- function(file){
+  r <- rast(file)
+  #30m to 200m :(
+  resampled_r <- resample(r, ref_cleaned, method = "bilinear")
+  #resampled_r <- aggregate(r, fact = 200 / res(r)[1], fun = mean)
+  cleanr <- mask(resampled_r, ref_cleaned, maskvalues=0)
+  classified_r <- classify(cleanr, reclass_matrix_rs)
+  
+  #dataframe
+  df <- as.data.frame(resampled_r, xy = TRUE)
+  df$Model <- "RF-RS"
+  df$ID <- basename(file)
+  print(dim(df))
+  return(cleanr)
+}
+
+```
+
+Apply functions to project and difference
+
+```{r}
+rs_files <- list.files(paste0(mapdir, "RS_RF_Maps_2000_2024"), pattern = "*.tif", full.names = TRUE)
+landis_files <- list.files(paste0(mapdir, "LandisMaps_04252025"), pattern = "*.img", full.names = TRUE)
+
+#apply the functions
+rs_rasters <- lapply(rs_files, project_rs)
+landis_rasters <- lapply(landis_files, project_landis)
+```
+
+Convert to list of difference rasters, normalize, and convert to df
+
+```{r}
+diff_list <- list(
+  "Black Spruce_RS" = rs_rasters[[2]] - rs_rasters[[1]],
+  "Quaking Aspen_RS" = rs_rasters[[4]] - rs_rasters[[3]],
+  "Alaskan Birch_RS" = rs_rasters[[6]] - rs_rasters[[5]],
+  "White Spruce_RS" = rs_rasters[[8]] - rs_rasters[[7]],
+  "Black Spruce_LANDIS" = landis_rasters[[2]] - landis_rasters[[1]],
+  "Alaskan Birch_LANDIS" = landis_rasters[[4]] - landis_rasters[[3]],
+  "Quaking Aspen_LANDIS" = landis_rasters[[6]] - landis_rasters[[4]],
+  "White Spruce_LANDIS" = landis_rasters[[8]] - landis_rasters[[7]]
+)
+
+full_list <- list(
+  "Black Spruce_RS 2000" = rs_rasters[[1]],
+  "Black Spruce_RS 2024" = rs_rasters[[2]],
+  "Quaking Aspen_RS 2000" = rs_rasters[[3]],
+  "Quaking Aspen_RS 2024" = rs_rasters[[4]],
+  "Alaskan Birch_RS 2000" = rs_rasters[[5]],
+  "Alaskan Birch_RS 2024" = rs_rasters[[6]],
+  "White Spruce_RS 2000" = rs_rasters[[7]],
+  "White Spruce_RS 2024" = rs_rasters[[8]],
+  "Black Spruce_LANDIS 2000" = landis_rasters[[1]],
+  "Black Spruce_LANDIS 2024" = landis_rasters[[2]],
+  "Quaking Aspen_LANDIS 2000" = landis_rasters[[3]],
+  "Quaking Aspen_LANDIS 2024" = landis_rasters[[4]],
+  "Alaskan Birch_LANDIS 2000" = landis_rasters[[5]],
+  "Alaskan Birch_LANDIS 2024" = landis_rasters[[6]],
+  "White Spruce_LANDIS 2000" = landis_rasters[[7]],
+  "White Spruce_LANDIS 2024" = landis_rasters[[8]]
+)
+
+#min max scaling
+# normalize_raster <- function(r) {
+#   mm <- terra::minmax(r)
+#   scaled <- (r - mm[1]) / (mm[2] - mm[1])        # scales to 0–1
+#   scaled * 2 - 1                                  # rescales to -1–1
+# }
+# 
+# # apply normalization
+# diff_list_scaled <- lapply(diff_list, normalize_raster)
+
+# convert to data frame
+raster_df <- bind_rows(lapply(names(diff_list), function(name) {
+  df <- as.data.frame(diff_list[[name]], xy = TRUE)
+  df$Species <- sub("_.*", "", name)
+  df$Model <- sub(".*_(\\w+).*", "\\1", name)
+  df$Year <- sub(".* (\\d{4})", "\\1", name)
+  colnames(df)[3] <- "Value"
+  return(df)
+}))
+
+#plotting
+raster_df$Class <- factor(raster_df$Value)
+
+# Define color scale once for consistency
+fill_scale <- scale_fill_distiller(palette="RdYlBu", direction=1, type="div", na.value="black")
+
+# Base theme
+base_theme <- theme_bw(base_family = "Times New Roman") +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_line(color="gray50")
+  )
+
+# RS plot
+rs_df <- raster_df %>% filter(Model == "RS")
+rs_plot <- ggplot(rs_df, aes(x = x, y = y, fill = Value)) +
+  geom_raster() +
+  fill_scale +
+  coord_equal() +
+  facet_grid(Species ~ .) +
+  base_theme +
+  theme(legend.position = "none")
+
+# LANDIS plot (has the legend)
+landis_df <- raster_df %>% filter(Model == "LANDIS")
+landis_plot <- ggplot(landis_df, aes(x = x, y = y, fill = Value)) +
+  geom_raster() +
+  fill_scale +
+  coord_equal() +
+  facet_grid(Species ~ .) +
+  base_theme +
+  theme(legend.position = "bottom")
+
+# Combine plots
+combined <- rs_plot | landis_plot +
+  #plot_layout(widths = c(1, 1), guides = "collect") &
+  theme(legend.position = "bottom")
+
+combined
+
+```
